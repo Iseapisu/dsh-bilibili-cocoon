@@ -3,12 +3,20 @@
 import { categoryCounts, uploaderCounts } from './metrics.js';
 
 const LEVEL_SENTENCE = {
-  开阔: '你看到的内容横跨多个一级分区，暂时没有明显的信息茧房迹象。',
+  开阔: '你看到的内容在多个一级分区之间散开，UP 主分布也不算集中。',
   偏窄: '内容已经开始向你熟悉的领域倾斜，主动扩列能把视野拉回来。',
   明显收窄: '内容明显向少数分区和 UP 主集中，继续这样会越来越难刷到圈外内容。',
   强茧房: '内容高度集中在少数分区和 UP 主，已经形成较强茧房，需要主动打破循环。',
   无数据: '没有可用样本，什么也说明不了。',
 };
+
+// The index has no theme term and its level scale is blunt: a single theme only
+// crosses 25 ("偏窄") at ~57% of the sample, so "开阔" covers most healthy-looking
+// and many not-so-healthy samples alike. Say both next to the verdict, otherwise
+// the level reads as a clean bill of health.
+const SCOPE_CAVEAT =
+  '这个数只反映分区和 UP 主的分布，不反映题材是否集中。' +
+  '按当前刻度，单一主题要占到约 57% 才会被判定为「偏窄」；「开阔」是低门槛的默认档，不等于「没问题」。';
 
 function pct(x) {
   const n = Number(x);
@@ -42,13 +50,15 @@ export function renderReport(result, opts = {}) {
 
   const lines = [];
   lines.push(
-    `> **结论：信息茧房指数 ${num(result.index, 1)} / 100 ——「${result.level}」**。${LEVEL_SENTENCE[result.level] ?? ''}`,
+    `> **结论：分区-UP 集中度 ${num(result.index, 1)} / 100 ——「${result.level}」**。${LEVEL_SENTENCE[result.level] ?? ''}`,
   );
+  lines.push('>');
+  lines.push(`> ${SCOPE_CAVEAT}`);
   lines.push('');
-  lines.push(`## 🧭 信息茧房报告（${result.date ?? '-'}）`);
+  lines.push(`## 🧭 分区-UP 集中度报告（${result.date ?? '-'}）`);
   lines.push('');
   lines.push(`- 样本：**${total}** 条${basisLabel}（推荐流 ${result.feedSize ?? 0} 条作对照）`);
-  lines.push(`- 综合指数：**${num(result.index, 1)} / 100**（越高越封闭）`);
+  lines.push(`- 分区-UP 集中度：**${num(result.index, 1)} / 100**（越高越集中；公式不含题材维度）`);
   lines.push(`- 等级：**${result.level}**`);
   lines.push('');
 

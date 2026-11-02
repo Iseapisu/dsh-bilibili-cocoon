@@ -1,12 +1,41 @@
-# dsh-bilibili-cocoon（插件外壳）
+# dsh-bilibili-cocoon（DSH 面板插件）
 
-B站信息茧房面板的 DSH 插件。**当前是骨架**：入口挂上去了，还没有接数据。
+B站首页题材放大的 DSH 面板：会话头部一个徽标，点开看「推给你的 / 路人能看到的 / 你在看的」三列对照，以及多天趋势。
 
 ## 现在有什么
 
-- 会话头部 `conversation.session.header.actions` 注入一个「茧房」pill（order 13，排在 bilibili 那个 pill 的右边）
-- 点开是一个占位面板
-- **不联网、不读文件、不注册 locale**——骨架阶段刻意保持零副作用
+- 会话头部 `conversation.session.header.actions` 注入一个徽标（order 13，排在 bilibili 那个 pill 的右边），文案是 `题材 1.8×`
+  ——这个数是当天被放大最多的那个题材的**去重**倍数（`headline.ratioDedup`），不是「茧房」的整体评分；
+  鼠标悬停的提示写明主题与口径（「AI / 大模型 1.8×（相对游客基线，按去重视频算）」）
+- 点开是面板（标题「B站首页题材」，380px 宽、最高 70vh、可滚动），从上到下（数字是 2026-11-02 那份汇总的样子）：
+  1. 元信息行：`日期 · N 轮 · 登录取 84 条 / 游客 82 行（38 支）`
+  2. 首页题材集中度块：最大题材及其占比 / 游客基线 + 倍数 / 前 3 主题占比 / 有效主题 8.2 / 10
+  3. 四列对照表 `主题 | 路人 | 推给你 | 你在看`，最多 4 行，按「推给你 − 路人」降序；
+     前两列是去重份额，`你在看` 是观看历史里的行数份额
+  4. 分区-UP 集中度趋势折线（`近 7 天 · N 天数据`），图下一行标 `basis`：
+     「基于观看历史 210 条 — 这个数只看分区和 UP 散不散，不含题材」
+  5. 建议句（固定规则生成，不是模型），以及底部一行「顺序按「推给你 − 路人」排；覆盖率 97.6%，未分类不计入比值。」
+- 点主题行展开归因：`共 20 条 · 零重复曝光`，下面列该题材被放大的具体视频——
+  标题点开在 B站新标签页打开，标题下面一行是 UP 主名，跨多轮反复推的会标「N 轮都推了」。
+  只有进了归因表（倍数 > 1.2×）的主题可以点，其余行是死的
+- 缺块不顶替：没有 `feedFocus` 就不渲染那个块，没有 `trend` 就不画线，没有 `advice` 时用一句倍数兜底，都不留半截图
+- 汇总本身失败（`ok: false`，比如 `exposure` 表还是空的）时不画数据，只显示原因和「先跑一次：node tools/exposure-login.mjs 3 28」；
+  请求本身失败则显示「暂时读不到数据。」加一个重试按钮
+- 不注册 locale、不写配置、不联网：面板里的每个数字都来自本地 `cocoon.db`
+
+## host 半边
+
+`lib/index.js` 只读 `cocoon.db`，提供 `GET /dsh-bilibili-cocoon/summary`。
+
+- 数据库路径默认 `<DSH_HOME>/im/bili-cocoon/data/cocoon.db`（`DSH_HOME` 缺省为 `~/.dsh`），可用 `COCOON_DB` 环境变量覆盖
+- 只读打开（`{ readOnly: true }`），从不写、从不轮询、不起定时器
+- 绝不抛异常：任何失败都收敛成 `{ ok: false, error, dbPath }`，路由照旧回 200（非 `GET` 回 405，前缀下其它路径回 404）
+  ——插件抛异常会把整个 GUI 一起带下去
+  - 汇总层算不出来时也会带上 `attributionError` / `feedFocusError` / `trendError`，其余字段照常返回，
+    所以趋势算挂了不会让面板变黑
+- 分类用的是 `src/themes.js` 那套规则（标题关键词 + 二级分区兜底 + `video_tag` 标签证据），
+  标签表缺失或读不出来就退回前两层，老库照样能开
+- 字段级别的完整说明在根目录 [`README.md`](../README.md) 的「What the summary endpoint returns」
 
 ## 为什么是独立插件，不是 bilibili 插件的子模块
 
@@ -36,11 +65,12 @@ rc.5 会热加载 `bundles` 改动；改 `lib/client.js` 之后刷新页面即�
 |---|---|
 | `package.json` | 包清单，`dsh.client` 声明 web 平台与 slot 依赖 |
 | `cordis.patch.yml` | 把插件插进 DSH 的配置补丁 |
-| `lib/index.js` | 宿主半边（骨架阶段是空的） |
-| `lib/client.js` | 浏览器半边：注册 slot、渲染 pill |
+| `lib/index.js` | 宿主半边：只读 `cocoon.db`，汇总成 summary 接口的响应 |
+| `lib/client.js` | 浏览器半边：注册 slot、渲染徽标与面板（归因展开 + 趋势折线都在这里） |
 
 ## 下一步
 
-1. host 读 `<DSH_HOME>/cocoon/cocoon.db`，暴露 `GET /dsh-bilibili-cocoon/summary`
-2. client 拉数据，pill 显示本周最大放大倍数（例如「茧房 3.1×」）
-3. 点开 overlay：推荐 / 游客基线 / 你在看 三列对照 + 归因 + 建议
+剩余工作见仓库根 [`README.md`](../README.md) 的 Roadmap，插件这边相关的是两条：
+
+- 标签聚类替掉关键词匹配（`/x/tag/archive/tags` 可用）
+- 注册 agent 侧工具（`cocoon_report`），让面板和 agent 走同一条代码路径

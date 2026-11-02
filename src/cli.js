@@ -13,7 +13,7 @@ const DEFAULT_REPORT_PATH = 'report.md';
 // Usage / errors
 // ----------------------------------------------------------------------
 
-const USAGE = `bili-cocoon —— 度量 B 站推荐流的信息茧房指数（零依赖）
+const USAGE = `bili-cocoon —— 度量 B 站内容的分区-UP 集中度（零依赖）
 
 用法：
   node src/cli.js <命令> [参数]
@@ -21,7 +21,7 @@ const USAGE = `bili-cocoon —— 度量 B 站推荐流的信息茧房指数（�
 
 命令：
   collect   采集首页推荐 / 观看历史 / 全站排行，写成当日快照
-  score     读取最近 N 天快照，计算茧房指数并打印
+  score     读取最近 N 天快照，计算分区-UP 集中度并打印
   report    计算并渲染 markdown 报告
   exposure  曝光侧采样：同一时刻对比「登录流」与「游客基线流」
 
@@ -538,14 +538,26 @@ async function computeScore(flags) {
   };
 }
 
+// The same formula reads 21.1 on 210 history rows and 14.9 on the 84-row feed,
+// so the number is only meaningful next to the sample it came from. Name the
+// basis on the line that shows the number.
+function basisNote(result) {
+  const size = Number(result.sampleSize ?? 0);
+  const label = result.basis === 'history' ? '观看历史' : result.basis === 'feed' ? '推荐流' : null;
+  if (label === null) return size > 0 ? `（基于 ${size} 条样本）` : '';
+  return size > 0 ? `（基于${label} ${size} 条）` : `（基于${label}）`;
+}
+
 function printScore(result, context) {
   const subs = result.subscores && typeof result.subscores === 'object' ? result.subscores : {};
   const indexText = formatNumber(result.index, 1);
   console.log('');
-  console.log(`茧房指数  ${indexText} / 100   ${result.level ?? '-'}`);
   console.log(
-    `日期 ${result.date ?? context.date} · 样本 ${result.sampleSize ?? context.counts.feed} 条 · ` +
-      `回看 ${context.days} 天 · feed ${context.counts.feed} / history ${context.counts.history} / ranking ${context.counts.ranking}`,
+    [`分区-UP 集中度  ${indexText} / 100`, result.level ?? '-', basisNote(result)].filter(Boolean).join('   '),
+  );
+  console.log(
+    `日期 ${result.date ?? context.date} · 回看 ${context.days} 天 · ` +
+      `feed ${context.counts.feed} / history ${context.counts.history} / ranking ${context.counts.ranking}`,
   );
   console.log('');
 

@@ -21,17 +21,18 @@ Conflating the two is the most common mistake in filter-bubble tooling. A health
 
 A single "bubble score" computed from watch history answers *"is my viewing diverse?"* — not *"is the feed feeding me the same thing?"*
 
-Measured on 2026-11-02, same account, same hour, three sampling rounds:
+Measured on 2026-11-02, same account, same hour, three sampling rounds. The logged-in feed and the guest baseline are close in size (84 and 82 rows), so the gap below is not a sample-size artefact — it is a **denominator** question:
 
-| Group | AI / LLM content |
-|---|---:|
-| Guest baseline (no account history) | 11.3 % |
-| Logged-in recommendation feed | **26.8 %** |
-| Actual watch history | 17.7 % |
+| AI / LLM share | Logged-in feed | Guest baseline | Ratio |
+|---|---:|---:|---:|
+| of classified **rows** | 24.4 % | 9.4 % | 2.60× |
+| of **distinct videos** (primary) | 24.4 % | 13.3 % | **1.83×** |
 
-The feed pushes 1.5× more of that topic than the user actually consumes, and 2.4× more than a newcomer would see. A consumption-only index would have reported "healthy" and missed the entire story.
+The dedup row is the one to quote. The guest feed is resampled from a much smaller pool — 82 rows covering only 38 videos (`repeatRate: 0.54`) against 84 rows covering 84 videos on the logged-in side (`repeatRate: 0`) — so counting rows dilutes whatever the guest baseline is *not* showing and inflates every ratio built on it. The row measure is kept because earlier versions of this README published it; it is the upper bound of the effect, not the effect.
 
-Repetition is not the mechanism either: all 19 AI items in the logged-in feed came from **19 different videos by 19 different uploaders** (`repeatRate: 0`, see [`attribution`](#attribution)). The feed is not re-serving a handful of clips — it tilts the whole topic mix. Counting duplicates would have found nothing here, which is why the tool compares distributions instead of counting repeats.
+Repetition is not the mechanism either: all 20 AI items in the logged-in feed came from **20 different videos by 20 different uploaders** (`repeatRate: 0`, see [`attribution`](#attribution)). The feed is not re-serving a handful of clips — it tilts the whole topic mix. Counting duplicates would have found nothing here, which is why the tool compares distributions instead of counting repeats.
+
+Watch history is the third sample, and it is the one the index number comes from: 21.1 on the same formula, against 14.9 for the 84-row feed ([why the basis matters](#how-the-concentration-index-is-computed)). A consumption-only index would have called this account "open" and missed the skew above — which is why the two sides stay apart.
 
 ## Quick start
 
@@ -59,9 +60,9 @@ node src/cli.js collect --cookie-file .\cookie.txt
 Cookies are read **only** from `BILI_COOKIE` or `--cookie-file`; nothing is hardcoded.
 `.gitignore` already excludes `cookie*.txt`, `bilibili-vault.json`, `bilibili-key.json`, `data/`, and `*.db`.
 
-## How the index is computed
+## How the concentration index is computed
 
-The primary metric follows Fu et al. (2024), who studied Bilibili: **Shannon entropy over top-level categories**, sampled from watch history.
+The 0–100 number shipped by `score`, the panel and `trend` is **partition/uploader concentration** — not a filter-bubble index. It follows Fu et al. (2024), who studied Bilibili, and it is a function of exactly two things: how spread a sample is across the 19 top-level partitions (the payload calls them `categories`), and how spread it is across uploaders.
 
 ```
 index = 100 × ( 0.55 × (1 − normalized entropy)
@@ -69,9 +70,11 @@ index = 100 × ( 0.55 × (1 − normalized entropy)
               + 0.20 × Gini(uploader exposure) )
 ```
 
-- **Normalized entropy** = `H / ln(19)` — the denominator is fixed at the 19 top-level categories, so "3 categories evenly split" (0.373) and "19 categories evenly split" (1.0) remain distinguishable.
-- **Effective categories** = `exp(H)` (Hill number, q=1) — reads as "how many categories you effectively watch".
-- **HHI** = `Σp²`; 1.0 means everything sits in one category.
+**There is no topic term in that formula.** `themes` is a diagnostic block that sits next to the index and never enters it (see [Theme concentration](#theme-concentration-diagnostic)). So the index cannot answer *"is my content all AI / NBA / one game?"* — a dozen partitions and a dozen uploaders serving nothing but the same subject still score as "open". The theme block and the amplification table answer that question; this number does not.
+
+- **Normalized entropy** = `H / ln(19)` — the denominator is fixed at the 19 top-level partitions, so "3 partitions evenly split" (0.373) and "19 partitions evenly split" (1.0) remain distinguishable.
+- **Effective categories** = `exp(H)` (Hill number, q=1) — reads as "how many partitions you effectively watch".
+- **HHI** = `Σp²`; 1.0 means everything sits in one partition.
 - **Gini** measures whether exposure concentrates on a few uploaders.
 - Entropy ships with a **bootstrap 95 % interval** (seed derived from the date, so the same input always yields the same output).
 
@@ -79,8 +82,25 @@ Diagnostics only — deliberately kept out of the score:
 
 - Jaccard overlap with the site-wide ranking (structurally near zero at small sample sizes; an earlier version wrongly weighted it at 20 %).
 - Jensen–Shannon divergence between feed and history distributions.
+- Theme concentration ([below](#theme-concentration-diagnostic)) — the one most likely to be mistaken for the index, which is exactly why it is labelled diagnostic.
 
-Levels: `<25 open / <50 leaning narrow / <70 clearly narrowing / ≥70 strong bubble`.
+### `basis`: the same formula, three different numbers
+
+`cocoonScore()` picks its sample in one line — `basis = history.length >= 10 ? 'history' : 'feed'` — and the same arithmetic scores those samples several points apart. All three of these exist at once in this repository on 2026-11-02:
+
+| sample | rows | index | basis |
+|---|---:|---:|---|
+| Logged-in feed, 3 sampled rounds (`feed`) | 84 | 14.9 | `feed` |
+| Daily `rcmd` snapshot (`rcmd`) | 28 | 18.4 | `feed` |
+| Watch history (`history`) | 210 | 21.1 | `history` |
+
+**21.1 is the watch-history number, not the home feed's.** The arithmetic is right; calling it "the feed's cocoon score" is what is wrong. Nothing in the formula differs between the three rows — only the sample does. Every consumer has to label it: `cocoonScore()` returns `basis`, and the summary endpoint exposes it per day as [`trend.points[].basis`](#trend). The `trend` points for 2026-10-30, 2026-11-01 and 2026-11-02 are all `history` with 209/209/210 rows, which is why they sit near 21 instead of near 15.
+
+### Calibration: the labels carry very little information
+
+`level` cuts the 0–100 range at 25/50/70, and the scale is dull in the direction that matters: a **single theme has to reach 57.3 %** of a sample before the index crosses 25 and reads "leaning narrow", and **81.1 %** before it reaches 50. In other words the "open" bucket covers every sample with a single-theme share from 0 % to 57 %, which is where almost everything lands. Read it as a coarse bucket, not a verdict; the components (`entropyNorm`, `hhi`, `gini`, `themes.concentration`) and the sample size are what carry information.
+
+Levels, with that caveat attached: `<25 open / <50 leaning narrow / <70 clearly narrowing / ≥70 strong bubble`.
 
 ### Why top-level categories
 
@@ -102,12 +122,13 @@ top theme share  = largest theme share among classified items
 effective themes = exp(theme entropy)      ← compare against effective categories
 ```
 
-Classification lives in `src/themes.js` and uses two signals:
+Classification lives in `src/themes.js` and uses three signals, in this order:
 
-1. **Title keywords** (AI / games / tech / science / daily life / food / animals / comedy / film & anime / music).
-2. **Second-level category fallback** — titles are often pure slang ("挤爆了", "草莓咪") with no topical signal. Keyword-only coverage is around 31 %; adding the category fallback raises it to **94 %**.
+1. **Title keywords** (AI / games / tech / science / daily life / food / animals / comedy / film & anime / music) — ten themes, plus `未分类`.
+2. **Second-level category fallback** — titles are often pure slang ("挤爆了", "草莓咪") with no topical signal. Keyword-only coverage is around 31 %; the category fallback carries most of the rest.
+3. **Tag evidence** — stored `video_tag` rows, consulted only where title and category both miss.
 
-Unclassified items are excluded from the denominator and coverage is reported separately. This is keyword matching, not NLP — below 80 % coverage, read the trend, not the absolute number.
+Unclassified items are excluded from the denominator, and coverage is reported per sample: 97.6 % on the 2026-11-02 logged-in feed, 78.1 % on the guest baseline, 98.6 % on watch history. Coverage is a property of the content, not of the classifier — compare shares only between samples whose coverage is comparable. This is keyword matching, not NLP — below 80 % coverage, read the trend, not the absolute number.
 
 ### References
 
@@ -165,12 +186,14 @@ node tools/trend.mjs                  # multi-day trend: index / entropy / uploa
 
 ## DSH panel plugin
 
-`plugin/` is a DeepSeek Harness client plugin. It injects a pill into the conversation header (`conversation.session.header.actions`, `order: 13`) right next to the bilibili plugin's own pill, and expands into a three-column comparison:
+`plugin/` is a DeepSeek Harness client plugin. It injects a pill into the conversation header (`conversation.session.header.actions`, `order: 13`) right next to the bilibili plugin's own pill, and expands into the `feedFocus` block, a three-column comparison, and the 7-day line:
 
 ```
-theme           newcomer   fed to you   you watch
-AI / LLM          11.3%  →   26.8%    ←  17.7%    2.36×
+theme                newcomer   fed to you   you watch
+AI / LLM                13.3%  →   24.4%    ←  historyShare
 ```
+
+Both percentages are shares of **distinct videos**, the primary measure; a summary from before the dedup fields falls back to row shares. The row measure is still served, and on 2026-11-02 reads 9.4 % → 24.4 % (2.60×) — the pair earlier versions of this README printed. `you watch` is the theme's share of the history sample: a third distribution, not a third copy of the same ratio, so it is not restated here. The pill badge shows `headline.ratioDedup` (1.83×), and the trend line is labelled with the `basis` it was computed from.
 
 The host half only reads `cocoon.db` and serves `GET /dsh-bilibili-cocoon/summary`; it never writes, never polls, and returns `{ ok: false, error }` instead of throwing — a failing plugin takes the whole GUI down with it.
 
@@ -187,16 +210,34 @@ It is a **separate package on purpose**: `@seiuna/dsh-bilibili-plugin` is shippe
 | `dbPath` | string | the database that was read (read-only) |
 | `rounds` | number | how many distinct sampling rounds the rows of `date` came from |
 | `login`, `guest`, `history` | object | `{ count, coverage, top }` — `count` rows, `coverage` the classified fraction, `top` up to 5 `{ id, name, n, share }` |
-| `amplification` | array | up to 6 `{ id, name, loginShare, guestShare, historyShare, ratio }`, sorted by `loginShare − guestShare` descending |
-| `headline` | object \| null | `{ id, name, ratio }` — the first theme in that order with `ratio > 1.2` |
+| `amplification` | array | up to 6 `{ id, name, loginShare, guestShare, loginShareDedup, guestShareDedup, historyShare, ratio, ratioDedup }`, sorted by `loginShare − guestShare` descending |
+| `headline` | object \| null | `{ id, name, ratio, ratioDedup }` — the first theme in that order with `ratio > 1.2` |
+| `feedFocus` | object \| null | what the home feed is made of — `{ top, top3Share, effectiveThemes, totalThemes, units, repeatRate }`, [below](#feedfocus) |
 | `attribution` | array | up to 3 themes drilled down to uploaders and videos — [below](#attribution) |
 | `advice` | object \| null | one sentence from a fixed rule, never a model call — [below](#advice) |
 | `trend` | object | the last 7 days — [below](#trend) |
-| `attributionError`, `trendError` | string | present only when that block failed; the rest of the body is still valid |
+| `attributionError`, `feedFocusError`, `trendError` | string | present only when that block failed; the rest of the body is still valid |
 
 `share` and `coverage` are fractions of **classified** items, not of all rows — items the classifier cannot place are excluded from the denominator (see [Theme concentration](#theme-concentration-diagnostic)). Shares carry 4 decimals, `ratio` 2.
 
-`headline` follows the amplification order, not the ratio. On 2026-11-02, 影视动漫 had the higher ratio (2.74×) but AI / 大模型 took the headline with 2.36×, because its share gap is larger.
+Every theme row carries two ratios over two denominators. `loginShare` / `guestShare` count **rows** over the classified row totals, and `ratio = loginShare / guestShare`. `loginShareDedup` / `guestShareDedup` are the same two shares over the **deduplicated** classified counts, and `ratioDedup = loginShareDedup / guestShareDedup`. Quote the dedup one: the guest feed is resampled from a much smaller pool (82 rows = 38 videos on 2026-11-02), so the row measure inflates every ratio built on it. `ratio` and `ratioDedup` are both `null` when the guest side has no item for that theme. `historyShare` always comes from the row measure — it is the account's own history, not a resampled feed.
+
+`headline` follows the amplification order, not the ratio. On 2026-11-02 that puts AI / 大模型 on top: 24.4 % of the classified logged-in feed against 9.4 % of the guest baseline on rows (`ratio` 2.60), and 24.4 % against 13.3 % on distinct videos (`ratioDedup` 1.83). The two orderings can disagree — a theme can have the larger ratio while another has the larger gap — and this field deliberately follows the gap.
+
+### `feedFocus`
+
+`null` when the day has no classified logged-in feed rows; otherwise the home-feed composition in one block. `top.share` and `top.baselineShare` are on the dedup measure — one denominator, distinct videos — which is why they divide into `ratioDedup` and not into the row ratio. `baselineShareRows` is the same baseline on the row measure: kept for comparison only, never shown in the UI, and not a valid denominator for the dedup `share`.
+
+| field | meaning | 2026-11-02 |
+|---|---|---|
+| `top` | `{ id, name, share, baselineShare, baselineShareRows, ratio, ratioDedup }` — the largest theme in the logged-in feed | AI / 大模型: `share` 24.4 %, `baselineShare` 13.3 %, `baselineShareRows` 9.4 %, `ratio` 2.60, `ratioDedup` 1.83 |
+| `top3Share` | summed `loginShare` of the three largest themes (row measure) | 51.2 % |
+| `effectiveThemes` | `exp(theme entropy)` over **distinct videos** — how many themes the feed effectively contains | 8.15 |
+| `totalThemes` | size of the theme vocabulary the classifier can emit | 10 |
+| `units` | `{ login, guest }` — distinct videos behind each side, i.e. the dedup denominators | 84 / 38 |
+| `repeatRate` | `{ login, guest }` — `(rows − distinct videos) / rows` | 0 / 0.54 |
+
+`units` is the whole reason two ratios exist: 84 logged-in rows are 84 distinct videos, while 82 guest rows are 38 distinct videos across 3 rounds, so the row measure counts the same guest video up to three times. `effectiveThemes` is computed over the dedup counts on purpose — counting one video once per re-sample would move it without the feed having changed — and only reads against `totalThemes`: 8.15 of 10 says the feed does reach most of the vocabulary, even while `top3Share` says half of it sits in three themes.
 
 ### `attribution`
 
@@ -205,7 +246,7 @@ Up to 3 entries, ordered by `loginShare − guestShare` descending — the same 
 | field | meaning |
 |---|---|
 | `id`, `name` | theme id and display name |
-| `ratio`, `loginShare`, `guestShare` | copied from the matching `amplification` row |
+| `ratio`, `loginShare`, `guestShare` | copied from the matching `amplification` row — the **row** measure; `ratioDedup` lives only on that row |
 | `appearances` | logged-in feed **rows** for the theme across all rounds — the same `bvid` in 3 rounds counts 3 times |
 | `uniqueBvids` | distinct videos |
 | `repeatRate` | `(appearances − uniqueBvids) / appearances`: the fraction of rows that are not a first sighting. `0` means every row was a different video |
@@ -216,13 +257,13 @@ Up to 3 entries, ordered by `loginShare − guestShare` descending — the same 
 {
   "id": "ai",
   "name": "AI / 大模型",
-  "ratio": 2.36,
-  "loginShare": 0.2676,
-  "guestShare": 0.1132,
-  "appearances": 19,
-  "uniqueBvids": 19,
+  "ratio": 2.6,
+  "loginShare": 0.2439,
+  "guestShare": 0.0938,
+  "appearances": 20,
+  "uniqueBvids": 20,
   "repeatRate": 0,
-  "topUps": [{ "mid": 74513608, "name": "哈哈哈哈哈估计", "n": 1, "share": 0.0526 }],
+  "topUps": [{ "mid": 74513608, "name": "哈哈哈哈哈估计", "n": 1, "share": 0.05 }],
   "topVideos": [{
     "bvid": "BV19q8z6LEnu",
     "title": "DFlash 2：给Qwen3.8-27B配个抢答小模型…",
@@ -236,12 +277,14 @@ Up to 3 entries, ordered by `loginShare − guestShare` descending — the same 
 
 ### `advice`
 
-`null` when no theme qualifies; otherwise `{ theme, name, ratio, kind, text }`.
+`null` when no theme qualifies; otherwise `{ theme, name, ratio, ratioDedup, kind, text }`.
 
 It is **generated by a fixed rule, not by a model** — no network call, no prompt, so the same input always yields the same sentence:
 
 - `kind: 'narrow'` — the theme's leading uploader holds ≥ 30 % of its rows (`topUps[0].share`), so one channel drives the amplification. The text names that uploader.
 - `kind: 'watch'` — no uploader reaches 30 %; the amplification sits at the topic level.
+
+The sentence quotes the **dedup** multiple (`ratioDedup`), so it agrees with the panel badge; `ratio` is the row measure and stays for comparability.
 
 `advice.theme` is resolved from `attribution` by `headline.id` first, so the badge and the advice sentence always name the same theme; the highest-`ratio` entry is only a fallback for a headline that did not survive the 1.2× filter.
 
@@ -252,35 +295,47 @@ It is **generated by a fixed rule, not by a model** — no network call, no prom
   "days": 7,
   "covered": 3,
   "points": [
-    { "date": "2026-10-30", "cocoon": 23.1, "amplification": null, "themes": null, "samples": 209 },
-    { "date": "2026-11-01", "cocoon": 22.7, "amplification": null, "themes": null, "samples": 209 },
-    { "date": "2026-11-02", "cocoon": 21.1, "amplification": 2.36, "themes": 10, "samples": 210 }
+    { "date": "2026-10-30", "cocoon": 23.1, "amplification": null, "themes": null, "samples": 209, "basis": "history" },
+    { "date": "2026-11-01", "cocoon": 22.7, "amplification": null, "themes": null, "samples": 209, "basis": "history" },
+    { "date": "2026-11-02", "cocoon": 21.1, "amplification": 2.6, "themes": 10, "samples": 210, "basis": "history" }
   ]
 }
 ```
 
 - `days` is the window width (7), `covered` is how many of those days actually have data.
 - `points` is sorted by date ascending and holds **only days that have data** — a missing day is not back-filled with zeros. Read `covered`, not `points.length`, as "how much of the week I have".
-- Per point: `cocoon` is the consumption index 0–100, **lower is more open**; `amplification` is that day's `headline.ratio`; `themes` is the number of distinct themes in the logged-in feed; `samples` is the item count behind the cocoon score.
+- Per point: `cocoon` is the 0–100 **partition/uploader concentration** of the sample named by `basis`, **lower is more spread out**; `basis` is `'history'` once the day has ≥ 10 history rows and `'feed'` otherwise, and is `null` whenever `cocoon` is; `amplification` is that day's `headline.ratio` (row measure); `themes` is the number of distinct themes in the logged-in feed; `samples` is the item count behind `cocoon`.
+- Never read `cocoon` without `basis`. The three points above are all `history` over 209/209/210 rows, so 23.1 / 22.7 / 21.1 describe **watch history**; the 84-row feed scores 14.9 on the same formula, and a 28-row `rcmd` snapshot 18.4. A `feed`-based point and a `history`-based point are not comparable.
 - Each metric degrades on its own: a day with snapshot data but no `exposure` rows still gets a point, with `amplification: null` and `themes: null`. `null` means "not computable", never zero.
 - The window ends at the newest day in `snapshot` **or** `exposure`, which can be newer than `date`.
+
+## Limitations
+
+Read these before quoting any number above.
+
+- **Ten fixed themes, not a taxonomy.** The classifier emits ten themes plus `未分类`. Content it has no words for — NBA, cars, 宅舞, KPOP, 赶海, crafts, tokusatsu — lands in `未分类` and is excluded from every share denominator. That is why the same classifier reports 78.1 % coverage on the guest baseline and 97.6 % on the logged-in feed: the content differs. Shares are only comparable between samples with comparable coverage.
+- **Partition mapping has holes.** On the 2026-11-02 logged-in feed, 19 % of rows had no top-level partition, because `view` now returns an empty `tname`. `parentOf('')` sends those rows to the catch-all `其他` bucket, which both dilutes the real partitions and inflates `其他`; `quality.feedMappedRatio` reports the fraction rather than hiding it (`quality.mappedRatio` is the same check for the sample the index scores). Partition entropy — and therefore the index — is only as good as that mapping.
+- **The guest baseline is "no account history", not a neutral baseline.** A fresh `buvid3` per round is the only part that can be reset; IP, city, ISP and user agent cannot. Bilibili's guest feed is still geolocated.
+- **Exposure is web-only.** Only `x/web-interface/wbi/index/top/feed/rcmd` is sampled. The App feed (`app.bilibili.com/x/v2/feed/index`) is a different endpoint with different rules, and it ignores `SESSDATA` — see [Known boundaries](#known-boundaries-measured-nov-2026).
+- **Three days is not a trend.** 2026-10-30, 11-01 and 11-02 are all the data there is; the line moves between 21.1 and 23.1 on samples of ~210 rows. It shows the pipeline works, not that anything is changing.
 
 ## What you can read now
 
 One unedited summary from 2026-11-02, three sampling rounds:
 
-| | items | theme coverage | top theme |
+| Sample | items | theme coverage | top theme |
 |---|---:|---:|---|
-| Logged-in feed | 84 | 84.5 % | AI / 大模型 26.8 % |
-| Guest baseline | 82 | 64.6 % | 搞笑整活 17.0 % |
-| Watch history | 210 | 94.3 % | 生活日常 23.7 % |
+| Logged-in feed | 84 | 97.6 % | AI / LLM 24.4 % |
+| Guest baseline | 82 | 78.1 % | Film & anime 17.2 % |
+| Watch history | 210 | 98.6 % | Daily life 22.7 % |
 
-AI / 大模型 is 26.8 % of the logged-in feed against 11.3 % of the guest baseline — **2.36×**. It is 17.7 % of watch history, so the feed pushes it 1.5× harder than the account actually watches it.
+The logged-in feed's largest theme is AI / LLM at **24.4 %** of classified rows. The guest baseline shows the same theme at **9.4 %** of rows and **13.3 %** of distinct videos — its own largest theme is a different one (film & anime, 17.2 % of classified items), and the history sample is topped by daily life at 22.7 %. That is the skew in one line: the topic the feed pushes hardest at this account is only a mid-sized topic to a stranger. The logged-in feed has no repeats at all (84 rows, 84 videos); the guest feed was resampled from 38 videos across 3 rounds (`repeatRate: 0.54`), which is the entire reason the dedup ratio exists.
 
-Drilling into that 2.36×:
+Drilling into that 1.83× (2.60× on rows):
 
-- `appearances` 19, `uniqueBvids` 19, `repeatRate` 0 — the 19 AI rows were 19 different videos from 19 different uploaders. The strongest one holds 5.3 % of the theme, nowhere near the 30 % threshold, so `advice.kind` is `watch`: topic-level amplification, not one channel.
-- The week: `2026-10-30 → 23.1`, `2026-11-01 → 22.7`, `2026-11-02 → 21.1`, `covered: 3` of 7. 10-31 has no snapshot and is absent from `points` rather than plotted as zero. Two points of movement in three days is direction, not a trend yet — read it against the sample size, not as a verdict.
+- `appearances` 20, `uniqueBvids` 20, `repeatRate` 0 — the 20 AI rows were 20 different videos from 20 different uploaders. The strongest one holds 1 of those 20 rows, nowhere near the 30 % threshold, so `advice.kind` is `watch`: topic-level amplification, not one channel.
+- `feedFocus` for the same day: `top3Share` 51.2 %, `effectiveThemes` 8.15 of `totalThemes` 10, `units` 84 / 38, `repeatRate` 0 / 0.54. Half the feed sits in three themes, out of a vocabulary of ten.
+- The week: `2026-10-30 → 23.1`, `2026-11-01 → 22.7`, `2026-11-02 → 21.1`, `covered: 3` of 7, all `basis: history` on 209/209/210 rows. 10-31 has no snapshot and is absent from `points` rather than plotted as zero. Three days on a ~210-row sample is not a trend yet — read it against the sample size, not as a verdict.
 
 ## Requirements
 
@@ -294,7 +349,7 @@ Drilling into that 2.36×:
 src/wbi.js              WBI signing (mixin key + w_rid), rate-limited queue, buvid3
 src/api.js              feed / history / ranking / video detail, normalized into Item
 src/metrics.js          pure functions: entropy, HHI, Gini, Jaccard, cocoonScore
-src/themes.js           theme classification (title keywords + category fallback)
+src/themes.js           theme classification (title keywords + category fallback + tags)
 src/exposure.js         exposure sampling and aggregation (login vs guest, amplification)
 src/report.js           Markdown report renderer
 src/store.js            SQLite snapshot + exposure storage
@@ -309,8 +364,9 @@ tools/                  mapping generators, backfill, trend, login-aware collect
 
 - [x] Attribute amplified themes down to specific uploaders and videos (`attribution`)
 - [x] Weekly amplification trend line, not just the latest snapshot (`trend`)
-- [ ] Tag-based clustering (`/x/tag/archive/tags` is available) to replace keyword matching
+- [x] Real Bilibili tags as a third classification signal — theme coverage went from 90 % to 97 % (`video_tag`)
 - [ ] Register agent-facing tools (`cocoon_report`) so the panel and the agent share one code path
+- [ ] Split AI out of the theme table, since it is cross-cutting (AI videos sit in technology, music and comedy alike), and add a current-affairs theme
 
 ## License
 
