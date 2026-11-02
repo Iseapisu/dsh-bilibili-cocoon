@@ -8,7 +8,7 @@ import path from 'node:path';
 
 import { buildSummary } from '../plugin/lib/index.js';
 import { THEMES } from '../src/themes.js';
-import { closeStore, openStore, saveExposure } from '../src/store.js';
+import { closeStore, openStore, saveExposure, saveSnapshot } from '../src/store.js';
 
 const DATE = '2026-11-01';
 
@@ -372,3 +372,205 @@ test('summary：归因抛错时降级返回 ok:true，其余字段照常', async
   assert.equal(r.advice, null);
   assert.equal(r.attributionError, 'simulated attribution failure');
 });
+
+// ----------------------------------------------------------------------
+// Weekly trend
+// ----------------------------------------------------------------------
+
+const TREND_END = '2026-11-02';
+
+// 210 history rows: cocoonScore prefers history once it has at least 10 rows,
+// so the trend samples count equals this length.
+function historyDay(count = 210, marker = null) {
+  return Array.from({ length: count }, (_, i) => ({
+    bvid: `BVh${i}`,
+    title: marker && i === 3 ? marker : ['大模型评测', '游戏攻略', '美食探店'][i % 3],
+    mid: 700 + i,
+    upName: `历史UP${i}`,
+    tid: 1,
+    tname: null,
+  }));
+}
+
+function exposureFor(date) {
+  return DOMINANT_UP_EXPOSURE.map((row) => ({ ...row, date }));
+}
+
+async function summaryOfDays(snapshots, exposures) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cocoon-summary-'));
+  const file = path.join(dir, 'cocoon.db');
+  const store = openStore(file);
+  try {
+    for (const day of snapshots) {
+      saveSnapshot(store, day.date, day.feed ?? [], day.history ?? [], day.ranking ?? []);
+    }
+    for (const row of exposures) {
+      saveExposure(store, row.date, row.kind, row.round, row.items);
+    }
+  } finally {
+    closeStore(store);
+  }
+  try {
+    return await buildSummary(file);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// Same injection style as poisonAttribution: a keyword regex that only throws
+// when reached from inside cocoonScore, so the summary path stays untouched.
+function poisonTrendCocoon(marker = '毒样本') {
+  const theme = THEMES.find((t) => t.id === 'ai');
+  const poison = /__trend_cocoon_never_matches__/;
+  poison.test = (text) => {
+    if (String(text).includes(marker) && String(new Error().stack).includes('cocoonScore')) {
+      throw new Error('simulated cocoon failure');
+    }
+    return false;
+  };
+  theme.keywords.push(poison);
+  return () => {
+    const index = theme.keywords.indexOf(poison);
+    if (index !== -1) theme.keywords.splice(index, 1);
+  };
+}
+
+test('trend：多天数据按日期升序，covered 与 points 一致', async () => {
+  const dates = ['2026-10-31', '2026-11-01', TREND_END];
+  const r = await summaryOfDays(
+    [
+      ...dates.map((date) => ({ date, history: historyDay() })),
+      // Outside the 7-day window ending at TREND_END, so it must not show up.
+      { date: '2026-10-20', history: historyDay(50) },
+    ],
+    dates.flatMap((date) => exposureFor(date)),
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.date, TREND_END);
+  assert.equal(r.trend.days, 7);
+  assert.equal(r.trend.covered, 3);
+  assert.deepEqual(
+    r.trend.points.map((p) => p.date),
+    dates,
+  );
+
+  for (const point of r.trend.points) {
+    assert.equal(typeof point.cocoon, 'number');
+    assert.ok(point.cocoon >= 0 && point.cocoon <= 100);
+    assert.equal(point.cocoon, Number(point.cocoon.toFixed(1)));
+    assert.equal(point.amplification, 2.5);
+    assert.equal(point.themes, 3);
+    assert.equal(point.samples, 210);
+  }
+});
+
+test('trend：某天缺 snapshot 时 point 仍在、cocoon 为 null，其它天不受影响', async () => {
+  const dates = ['2026-10-31', '2026-11-01', TREND_END];
+  const r = await summaryOfDays(
+    [
+      { date: '2026-10-31', history: historyDay() },
+      { date: TREND_END, history: historyDay() },
+    ],
+    dates.flatMap((date) => exposureFor(date)),
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.trend.covered, 3);
+  assert.deepEqual(
+    r.trend.points.map((p) => p.date),
+    dates,
+  );
+
+  const missing = r.trend.points[1];
+  assert.equal(missing.date, '2026-11-01');
+  assert.equal(missing.cocoon, null);
+  // No snapshot, so samples falls back to the login exposure row count.
+  assert.equal(missing.samples, 10);
+  assert.equal(missing.amplification, 2.5);
+  assert.equal(missing.themes, 3);
+
+  for (const point of [r.trend.points[0], r.trend.points[2]]) {
+    assert.equal(typeof point.cocoon, 'number');
+    assert.equal(point.samples, 210);
+  }
+});
+
+test('trend：只有一天数据时 points 长度 1、covered 1', async () => {
+  const r = await summaryOfDays(
+    [{ date: TREND_END, history: historyDay() }],
+    exposureFor(TREND_END),
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.trend.days, 7);
+  assert.equal(r.trend.covered, 1);
+  assert.equal(r.trend.points.length, 1);
+  assert.equal(r.trend.points[0].date, TREND_END);
+  assert.equal(typeof r.trend.points[0].cocoon, 'number');
+  assert.equal(r.trend.points[0].samples, 210);
+  assert.equal(r.trend.points[0].amplification, 2.5);
+});
+
+test('trend：样本不足的畸形数据该天降级为 null，point 仍保留', async () => {
+  const r = await summaryOfDays(
+    [
+      // Only 3 history rows and no feed: below the history basis threshold, so
+      // the day has no usable cocoon sample.
+      { date: '2026-11-01', history: historyDay(3) },
+      { date: TREND_END, history: historyDay() },
+    ],
+    exposureFor(TREND_END),
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.trend.covered, 2);
+
+  const thin = r.trend.points[0];
+  assert.equal(thin.date, '2026-11-01');
+  assert.equal(thin.cocoon, null);
+  assert.equal(thin.samples, 0);
+  assert.equal(thin.amplification, null);
+  assert.equal(thin.themes, null);
+
+  const healthy = r.trend.points[1];
+  assert.equal(typeof healthy.cocoon, 'number');
+  assert.equal(healthy.samples, 210);
+});
+
+test('trend：单天 cocoonScore 抛错时该天降级为 null，summary 其余字段照常', async () => {
+  const dates = ['2026-10-31', '2026-11-01', TREND_END];
+  const restore = poisonTrendCocoon();
+  let r;
+  try {
+    r = await summaryOfDays(
+      [
+        { date: '2026-10-31', history: historyDay() },
+        { date: '2026-11-01', history: historyDay(210, '毒样本') },
+        { date: TREND_END, history: historyDay() },
+      ],
+      dates.flatMap((date) => exposureFor(date)),
+    );
+  } finally {
+    restore();
+  }
+
+  assert.equal(r.ok, true);
+  assert.equal('trendError' in r, false);
+  assert.deepEqual(
+    r.trend.points.map((p) => p.date),
+    dates,
+  );
+
+  const poisoned = r.trend.points[1];
+  assert.equal(poisoned.cocoon, null);
+  assert.equal(poisoned.samples, 10);
+  assert.equal(poisoned.amplification, 2.5);
+  assert.equal(poisoned.themes, 3);
+
+  assert.equal(typeof r.trend.points[0].cocoon, 'number');
+  assert.equal(typeof r.trend.points[2].cocoon, 'number');
+
+  // The daily summary itself is unaffected by the trend failure.
+  assert.equal(r.login.count, 10);
+  assert.equal(r.guest.count, 10);
+  assert.equal(r.headline.ratio, 2.5);
+  assert.equal(r.advice.kind, 'narrow');
+});
+

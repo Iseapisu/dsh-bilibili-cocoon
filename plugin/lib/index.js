@@ -65,6 +65,63 @@ function topThemes(counts, total, themeName, limit = 5) {
 }
 
 // ----------------------------------------------------------------------
+// Theme stats
+// ----------------------------------------------------------------------
+
+function buildThemeStats(rows, themes) {
+  const counts = new Map();
+  for (const r of rows) {
+    const id = themes.classifyTheme(r.title, r.tname);
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  const unclassified = counts.get(themes.UNCLASSIFIED) ?? 0;
+  const classified = rows.length - unclassified;
+  const classifiedCounts = new Map([...counts].filter(([id]) => id !== themes.UNCLASSIFIED));
+  return {
+    count: rows.length,
+    classified,
+    coverage: pct(classified, rows.length),
+    counts: classifiedCounts,
+    top: topThemes(classifiedCounts, classified, themes.themeName),
+  };
+}
+
+// ----------------------------------------------------------------------
+// Amplification
+// ----------------------------------------------------------------------
+
+function buildAmplification(expoRows, history, themes) {
+  const loginRows = expoRows.filter((r) => r.kind === 'login');
+  const login = buildThemeStats(loginRows, themes);
+  const guest = buildThemeStats(expoRows.filter((r) => r.kind === 'guest'), themes);
+
+  const historyShares = new Map(
+    [...history.counts.entries()].map(([id, n]) => [id, pct(n, history.classified)]),
+  );
+  const ids = new Set([...login.counts.keys(), ...guest.counts.keys()]);
+  const rows = [...ids]
+    .map((id) => {
+      const l = login.counts.get(id) ?? 0;
+      const g = guest.counts.get(id) ?? 0;
+      const loginShare = pct(l, login.classified);
+      const guestShare = pct(g, guest.classified);
+      return {
+        id,
+        name: themes.themeName(id),
+        loginShare,
+        guestShare,
+        historyShare: historyShares.get(id) ?? 0,
+        ratio: guestShare > 0 ? Number((loginShare / guestShare).toFixed(2)) : null,
+      };
+    })
+    .filter((a) => a.loginShare > 0 || a.guestShare > 0)
+    .sort((a, b) => (b.loginShare - b.guestShare) - (a.loginShare - a.guestShare));
+
+  const head = rows.find((a) => a.ratio !== null && a.ratio > 1.2);
+  return { loginRows, login, guest, amplification: rows, head };
+}
+
+// ----------------------------------------------------------------------
 // Attribution
 // ----------------------------------------------------------------------
 
@@ -185,12 +242,129 @@ function buildAdvice(attribution, headlineId) {
   };
 }
 
+// ----------------------------------------------------------------------
+// Weekly trend
+// ----------------------------------------------------------------------
+
+const TREND_DAYS = 7;
+
+// Date-only arithmetic on YYYY-MM-DD strings; UTC keeps it free of the
+// machine timezone, and comparison stays a plain string compare.
+function shiftDate(date, delta) {
+  const [y, m, d] = date.split('-').map((n) => Number(n));
+  return new Date(Date.UTC(y, m - 1, d + delta)).toISOString().slice(0, 10);
+}
+
+const oneDecimal = (n) => (Number.isFinite(n) ? Number(Number(n).toFixed(1)) : null);
+
+// One day of trend data. Each metric degrades to null on its own so a single
+// bad day (or a throwing call) never removes the point from the line.
+function trendPoint(db, date, themes, cocoon) {
+  const point = { date, cocoon: null, amplification: null, themes: null, samples: 0 };
+  const snap = { feed: [], history: [], ranking: [] };
+
+  try {
+    const rows = db
+      .prepare('SELECT source, bvid, tid, tname, mid, upName, title FROM snapshot WHERE date = ?')
+      .all(date);
+    for (const row of rows) {
+      const bucket = snap[row.source];
+      if (Array.isArray(bucket)) bucket.push(row);
+    }
+  } catch {
+    // Unreadable snapshot day: leave the cocoon point at null.
+  }
+
+  const hasSnapshot = snap.feed.length > 0 || snap.history.length > 0 || snap.ranking.length > 0;
+  let sampleSize = null;
+  if (hasSnapshot && typeof cocoon === 'function') {
+    try {
+      // Same input shape as tools/trend.mjs: stored rcmd/history/ranking rows.
+      const score = cocoon({ ...snap, date }, { date });
+      const index = oneDecimal(score?.index);
+      const size = Number(score?.sampleSize);
+      // cocoonScore returns index 0 with an empty sample; treat that as no data
+      // rather than drawing a misleading "wide open" point.
+      if (index !== null && size > 0) {
+        point.cocoon = index;
+        sampleSize = size;
+      }
+    } catch {
+      point.cocoon = null;
+      sampleSize = null;
+    }
+  }
+
+  let expoRows = [];
+  try {
+    expoRows = db
+      .prepare('SELECT kind, round, bvid, tid, tname, mid, upName, title FROM exposure WHERE date = ?')
+      .all(date);
+  } catch {
+    expoRows = [];
+  }
+  const loginRows = expoRows.filter((r) => r.kind === 'login');
+
+  if (expoRows.length) {
+    try {
+      const history = buildThemeStats(snap.history, themes);
+      const { head } = buildAmplification(expoRows, history, themes);
+      point.amplification = head && Number.isFinite(head.ratio) ? head.ratio : null;
+    } catch {
+      point.amplification = null;
+    }
+
+    try {
+      const ids = new Set();
+      for (const row of loginRows) {
+        const id = themes.classifyTheme(row.title, row.tname);
+        if (id !== themes.UNCLASSIFIED) ids.add(id);
+      }
+      point.themes = loginRows.length ? ids.size : null;
+    } catch {
+      point.themes = null;
+    }
+  }
+
+  // samples: rows behind the cocoon score (history first, rcmd when history is
+  // thin). Without a snapshot, fall back to the login exposure row count.
+  point.samples = sampleSize !== null ? sampleSize : loginRows.length;
+  return point;
+}
+
+function buildTrend(db, latestDate, themes, cocoon) {
+  const since = shiftDate(latestDate, -(TREND_DAYS - 1));
+  const dates = new Set();
+  for (const table of ['snapshot', 'exposure']) {
+    try {
+      const rows = db
+        .prepare(`SELECT DISTINCT date FROM ${table} WHERE date >= ? AND date <= ?`)
+        .all(since, latestDate);
+      for (const row of rows) dates.add(row.date);
+    } catch {
+      // A missing table just means that source contributes no days.
+    }
+  }
+
+  const points = [...dates].sort().map((date) => trendPoint(db, date, themes, cocoon));
+  return { days: TREND_DAYS, covered: points.length, points };
+}
+
 export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPath()) {
   let themes;
   try {
     themes = await import('../../src/themes.js');
   } catch (err) {
     return { ok: false, error: `核心模块加载失败: ${err.message}`, dbPath };
+  }
+
+  // Trend only needs the score function; if metrics.js is missing the trend
+  // line loses its cocoon values but the rest of the summary still works.
+  let cocoon = null;
+  try {
+    cocoon = (await import('../../src/metrics.js')).cocoonScore;
+  } catch {
+    cocoon = null;
   }
 
   let sqlite;
@@ -224,52 +398,12 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
       .prepare("SELECT title, tname, upName FROM snapshot WHERE date = ? AND source = 'history'")
       .all(date);
 
-    const build = (rows) => {
-      const counts = new Map();
-      for (const r of rows) {
-        const id = themes.classifyTheme(r.title, r.tname);
-        counts.set(id, (counts.get(id) ?? 0) + 1);
-      }
-      const unclassified = counts.get(themes.UNCLASSIFIED) ?? 0;
-      const classified = rows.length - unclassified;
-      const classifiedCounts = new Map([...counts].filter(([id]) => id !== themes.UNCLASSIFIED));
-      return {
-        count: rows.length,
-        classified,
-        coverage: pct(classified, rows.length),
-        counts: classifiedCounts,
-        top: topThemes(classifiedCounts, classified, themes.themeName),
-      };
-    };
-
-    const loginRows = expoRows.filter((r) => r.kind === 'login');
-    const login = build(loginRows);
-    const guest = build(expoRows.filter((r) => r.kind === 'guest'));
-    const history = build(historyRows);
-
-    const historyShares = new Map(
-      [...history.counts.entries()].map(([id, n]) => [id, pct(n, history.classified)]),
+    const history = buildThemeStats(historyRows, themes);
+    const { loginRows, login, guest, amplification, head } = buildAmplification(
+      expoRows,
+      history,
+      themes,
     );
-    const ids = new Set([...login.counts.keys(), ...guest.counts.keys()]);
-    const amplification = [...ids]
-      .map((id) => {
-        const l = login.counts.get(id) ?? 0;
-        const g = guest.counts.get(id) ?? 0;
-        const loginShare = pct(l, login.classified);
-        const guestShare = pct(g, guest.classified);
-        return {
-          id,
-          name: themes.themeName(id),
-          loginShare,
-          guestShare,
-          historyShare: historyShares.get(id) ?? 0,
-          ratio: guestShare > 0 ? Number((loginShare / guestShare).toFixed(2)) : null,
-        };
-      })
-      .filter((a) => a.loginShare > 0 || a.guestShare > 0)
-      .sort((a, b) => (b.loginShare - b.guestShare) - (a.loginShare - a.guestShare));
-
-    const head = amplification.find((a) => a.ratio !== null && a.ratio > 1.2);
 
     let attribution = [];
     let advice = null;
@@ -286,6 +420,22 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
 
     const headline = head ? { id: head.id, name: head.name, ratio: head.ratio } : null;
 
+    let trend;
+    let trendError = null;
+    try {
+      // The window ends at the newest day the database knows about, which can
+      // be newer than the exposure day this summary is built from.
+      const latest = db
+        .prepare('SELECT MAX(date) AS d FROM (SELECT date FROM snapshot UNION ALL SELECT date FROM exposure)')
+        .get()?.d;
+      const latestDate = typeof latest === 'string' && latest > date ? latest : date;
+      trend = buildTrend(db, latestDate, themes, cocoon);
+    } catch (err) {
+      // Trend is an enhancement; a failure here must not hide the panel.
+      trend = { days: TREND_DAYS, covered: 0, points: [] };
+      trendError = String(err && err.message ? err.message : err);
+    }
+
     return {
       ok: true,
       date,
@@ -298,7 +448,9 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
       headline,
       attribution,
       advice,
+      trend,
       ...(attributionError === null ? {} : { attributionError }),
+      ...(trendError === null ? {} : { trendError }),
     };
   } catch (err) {
     return { ok: false, error: `汇总失败: ${err.message}`, dbPath };
