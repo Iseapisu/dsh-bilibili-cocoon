@@ -1,8 +1,8 @@
 /**
- * dsh-bili-cocoon — 宿主半边。
+ * dsh-bilibili-cocoon — 宿主半边。
  *
  * 只做一件事：把 bili-cocoon 的 SQLite 结果读出来，算成前端能直接渲染的摘要，
- * 通过 `GET /dsh-bili-cocoon/summary` 暴露。
+ * 通过 `GET /dsh-bilibili-cocoon/summary` 暴露。
  *
  * 三条硬约束（这个项目因为插件把 GUI 带崩过一次）：
  *   1. 只读数据库，永远不写
@@ -17,7 +17,7 @@
 import os from 'node:os';
 import path from 'node:path';
 
-const ROUTE_PREFIX = '/dsh-bili-cocoon';
+const ROUTE_PREFIX = '/dsh-bilibili-cocoon';
 
 /** 本机默认位置；换机器/发布时要靠 COCOON_DB 覆盖。 */
 function defaultDbPath() {

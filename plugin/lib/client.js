@@ -1,23 +1,23 @@
 /*
- * dsh-bili-cocoon — 客户端半边。
+ * dsh-bilibili-cocoon — 客户端半边。
  *
  * 挂载方式与 dsh-local-engines 一致：执行本文件只登记 factory，真正的注册
  * 发生在模块被 materialize 时，随这个插件的 client fiber 一起销毁。
  *
- * 数据从 `GET /dsh-bili-cocoon/summary` 取（Host 半边读 SQLite 后算好的摘要）。
+ * 数据从 `GET /dsh-bilibili-cocoon/summary` 取（Host 半边读 SQLite 后算好的摘要）。
  * 桌面端会把页面请求转发给 Host，相对 fetch 同源，不需要 CORS 处理。
  *
  * 失败姿态：拉不到数据就显示「茧房 ?」，面板里给出原因。绝不因为后端没数据
  * 让这个 pill 阻塞或抛错——它挂在会话头部，崩了很难看。
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-bili-cocoon',
+  id: 'dsh-bilibili-cocoon',
   factory: function (require) {
     var React = require('react')
     var h = React.createElement
 
-    var NS = 'dsh-bili-cocoon'
-    var ROUTE = '/dsh-bili-cocoon/summary'
+    var NS = 'dsh-bilibili-cocoon'
+    var ROUTE = '/dsh-bilibili-cocoon/summary'
 
     var PANEL_STYLE = {
       position: 'absolute',

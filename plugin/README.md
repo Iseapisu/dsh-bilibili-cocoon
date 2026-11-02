@@ -1,4 +1,4 @@
-# dsh-bili-cocoon（插件外壳）
+# dsh-bilibili-cocoon（插件外壳）
 
 B站信息茧房面板的 DSH 插件。**当前是骨架**：入口挂上去了，还没有接数据。
 
@@ -19,16 +19,16 @@ slot 是全局的、按 `order` 排序，所以独立插件注入同一个 slot 
 
 ```bash
 # 1. 链接进 profile（开发期 junction，改代码即时生效）
-node -e "require('fs').symlinkSync(String.raw`C:\Users\94500\.dsh\im\bili-cocoon\plugin`, String.raw`C:\Users\94500\.dsh\profiles\desktop\node_modules\dsh-bili-cocoon`, 'junction')"
+node -e "require('fs').symlinkSync(String.raw`C:\Users\94500\.dsh\im\bili-cocoon\plugin`, String.raw`C:\Users\94500\.dsh\profiles\desktop\node_modules\dsh-bilibili-cocoon`, 'junction')"
 
 # 2. profile package.json：
-#    dependencies 加 "dsh-bili-cocoon": "link:C:/Users/94500/.dsh/im/bili-cocoon/plugin"
-#    dsh.profile.bundles 加 "dsh-bili-cocoon"
+#    dependencies 加 "dsh-bilibili-cocoon": "link:C:/Users/94500/.dsh/im/bili-cocoon/plugin"
+#    dsh.profile.bundles 加 "dsh-bilibili-cocoon"
 ```
 
 rc.5 会热加载 `bundles` 改动；改 `lib/client.js` 之后刷新页面即可。
 
-**回滚**：把 `dsh.profile.bundles` 里的 `"dsh-bili-cocoon"` 删掉，重启。
+**回滚**：把 `dsh.profile.bundles` 里的 `"dsh-bilibili-cocoon"` 删掉，重启。
 
 ## 文件
 
@@ -41,6 +41,6 @@ rc.5 会热加载 `bundles` 改动；改 `lib/client.js` 之后刷新页面即�
 
 ## 下一步
 
-1. host 读 `<DSH_HOME>/cocoon/cocoon.db`，暴露 `GET /dsh-bili-cocoon/summary`
+1. host 读 `<DSH_HOME>/cocoon/cocoon.db`，暴露 `GET /dsh-bilibili-cocoon/summary`
 2. client 拉数据，pill 显示本周最大放大倍数（例如「茧房 3.1×」）
 3. 点开 overlay：推荐 / 游客基线 / 你在看 三列对照 + 归因 + 建议
