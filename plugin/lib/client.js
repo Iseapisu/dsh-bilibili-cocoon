@@ -14,7 +14,10 @@ window.__ModuleLoader__.load({
       position: 'absolute',
       top: '30px',
       right: 0,
-      width: '330px',
+      width: '380px',
+      maxWidth: 'calc(100vw - 16px)',
+      maxHeight: '70vh',
+      overflowY: 'auto',
       padding: '12px 14px',
       borderRadius: '10px',
       background: 'rgba(28, 30, 34, 0.98)',
@@ -43,32 +46,170 @@ window.__ModuleLoader__.load({
 
     var NUM = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' }
     var DIM = { opacity: 0.6 }
+    var STAT_STYLE = Object.assign({}, DIM, { fontSize: '11px', marginBottom: '4px' })
+
+    var LINK_STYLE = {
+      color: '#8ab4f8',
+      textDecoration: 'none',
+      display: 'block',
+      maxHeight: '2.9em',
+      overflow: 'hidden',
+      wordBreak: 'break-word',
+      lineHeight: 1.45,
+    }
+
+    var EXPAND_STYLE = {
+      margin: '2px 0 6px',
+      padding: '4px 8px',
+      background: 'rgba(255, 255, 255, 0.04)',
+      borderLeft: '2px solid rgba(255, 255, 255, 0.2)',
+      borderRadius: '4px',
+    }
 
     function pct(x) {
       var n = Number(x)
       return isFinite(n) ? (n * 100).toFixed(1) + '%' : '-'
     }
 
-    function themeRow(a, key) {
+    // Numeric field -> number, or null when it is missing / not a usable number.
+    // null and undefined must not become 0 here: repeatRate 0 is a real value.
+    function num(x) {
+      if (x === null || x === undefined || x === '') return null
+      var t = typeof x
+      if (t !== 'number' && t !== 'string') return null
+      var n = Number(x)
+      return Number.isFinite(n) ? n : null
+    }
+
+    // The headline of the expanded block: how many rows the theme held and how
+    // much of it was repeated. Renders nothing when the numbers are unusable.
+    function statLine(attr) {
+      var a = attr || {}
+      var appearances = num(a.appearances)
+      var uniqueBvids = num(a.uniqueBvids)
+      var repeatRate = num(a.repeatRate)
+      if (appearances === null || uniqueBvids === null || repeatRate === null) return null
+      var detail = repeatRate === 0 ? '零重复曝光' : '重复率 ' + (repeatRate * 100).toFixed(0) + '%'
+      return h('div', { style: STAT_STYLE }, '共 ' + appearances + ' 条 · ' + detail)
+    }
+
+    function videoItem(v, key) {
+      var video = v || {}
+      var title = video.title
+      if (title === null || title === undefined || title === '') title = '未知标题'
+      var upName = video.upName
+      if (upName === null || upName === undefined || upName === '') upName = '未知 UP'
+      var rounds = num(video.rounds)
+      var meta = upName
+      if (rounds !== null && rounds > 1) meta = upName + ' · ' + rounds + ' 轮都推了'
+      var url = typeof video.url === 'string' && video.url ? video.url : null
+
       return h(
         'div',
-        {
-          key: key,
-          style: {
-            display: 'grid',
-            gridTemplateColumns: '1fr 46px 46px 46px',
-            gap: '4px',
-            padding: '2px 0',
-          },
-        },
-        h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, a.name),
-        h('span', { style: Object.assign({}, NUM, DIM) }, pct(a.guestShare)),
-        h('span', { style: Object.assign({}, NUM, { fontWeight: 600 }) }, pct(a.loginShare)),
-        h('span', { style: Object.assign({}, NUM, DIM) }, pct(a.historyShare)),
+        { key: key, style: { padding: '4px 0' } },
+        url
+          ? h(
+              'a',
+              {
+                href: url,
+                target: '_blank',
+                rel: 'noopener noreferrer',
+                onClick: function (e) {
+                  e.stopPropagation()
+                },
+                style: LINK_STYLE,
+              },
+              title,
+            )
+          : h('div', { style: LINK_STYLE }, title),
+        h('div', { style: Object.assign({}, DIM, { marginTop: '2px' }) }, meta),
       )
     }
 
+    function expandBlock(attr) {
+      var list = attr && Array.isArray(attr.topVideos) ? attr.topVideos.slice(0, 3) : []
+      return h(
+        'div',
+        { style: EXPAND_STYLE },
+        statLine(attr),
+        list.length
+          ? list.map(function (v, i) {
+              return videoItem(v, (v && v.bvid) || i)
+            })
+          : h('div', { style: DIM }, '这个主题没有可列出的视频。'),
+      )
+    }
+
+    function themeRow(a, attr, expanded, onToggle) {
+      a = a || {}
+      var id = a.id !== undefined && a.id !== null ? String(a.id) : ''
+      var canExpand = !!attr
+      var open = canExpand && expanded === id
+
+      var cells = [
+        h(
+          'span',
+          { key: 'name', style: { display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 } },
+          canExpand ? h('span', { style: { opacity: 0.6, flex: 'none' } }, open ? '▾' : '▸') : null,
+          h(
+            'span',
+            { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+            a.name === null || a.name === undefined ? '未知主题' : a.name,
+          ),
+        ),
+        h('span', { key: 'guest', style: Object.assign({}, NUM, DIM) }, pct(a.guestShare)),
+        h('span', { key: 'login', style: Object.assign({}, NUM, { fontWeight: 600 }) }, pct(a.loginShare)),
+        h('span', { key: 'history', style: Object.assign({}, NUM, DIM) }, pct(a.historyShare)),
+      ]
+
+      var gridStyle = {
+        display: 'grid',
+        gridTemplateColumns: '1fr 46px 46px 46px',
+        gap: '4px',
+        width: '100%',
+        padding: '2px 0',
+        borderRadius: '4px',
+      }
+
+      // Only attributed themes get a real button; others stay inert rows with no
+      // clickable affordance.
+      var row = canExpand
+        ? h(
+            'button',
+            {
+              type: 'button',
+              onClick: function () {
+                onToggle(id)
+              },
+              onMouseEnter: function (e) {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)'
+              },
+              onMouseLeave: function (e) {
+                e.currentTarget.style.background = 'transparent'
+              },
+              style: Object.assign({}, gridStyle, {
+                appearance: 'none',
+                border: 'none',
+                margin: 0,
+                background: 'transparent',
+                color: 'inherit',
+                font: 'inherit',
+                textAlign: 'left',
+                cursor: 'pointer',
+              }),
+            },
+            cells,
+          )
+        : h('div', { style: gridStyle }, cells)
+
+      return h('div', { key: id }, row, open ? expandBlock(attr) : null)
+    }
+
     function Body(props) {
+      var expandedState = React.useState(null)
+      var expanded = expandedState[0]
+      var setExpanded = expandedState[1]
+
       var data = props.data
       if (props.phase === 'loading') return h('div', { style: DIM }, '读取中…')
       if (props.phase === 'error') {
@@ -95,6 +236,21 @@ window.__ModuleLoader__.load({
 
       var rows = (data.amplification || []).slice(0, 4)
 
+      // Older summaries have no attribution; build a lookup that tolerates both
+      // a missing field and malformed entries.
+      var attrMap = {}
+      if (Array.isArray(data.attribution)) {
+        data.attribution.forEach(function (item) {
+          if (!item || item.id === undefined || item.id === null) return
+          attrMap[String(item.id)] = item
+        })
+      }
+
+      var advice = data.advice && typeof data.advice.text === 'string' && data.advice.text ? data.advice.text : ''
+      var fallbackLine = rows[0]
+        ? '这一周算法在你身上加码最多的是 ' + rows[0].name + '（' + (rows[0].ratio === null ? '路人没看到' : rows[0].ratio + '×') + '）。'
+        : null
+
       return h(
         'div',
         null,
@@ -112,12 +268,13 @@ window.__ModuleLoader__.load({
           h('span', { style: Object.assign({}, NUM, DIM) }, '你在看'),
         ),
         rows.map(function (a) {
-          return themeRow(a, a.id)
+          var id = a && a.id !== undefined && a.id !== null ? String(a.id) : ''
+          return themeRow(a, attrMap[id] || null, expanded, function (nextId) {
+            setExpanded(expanded === nextId ? null : nextId)
+          })
         }),
         h('div', { style: { marginTop: '10px', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '8px' } },
-          rows[0]
-            ? h('div', null, '这一周算法在你身上加码最多的是 ' + rows[0].name + '（' + (rows[0].ratio === null ? '路人没看到' : rows[0].ratio + '×') + '）。')
-            : null,
+          advice ? h('div', { style: { whiteSpace: 'pre-wrap' } }, advice) : fallbackLine,
           h('div', { style: Object.assign({}, DIM, { marginTop: '4px' }) },
             '顺序按「推给你 − 路人」排；覆盖率 ' + pct(data.login.coverage) + '，未分类不计入比值。'),
         ),
