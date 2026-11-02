@@ -96,6 +96,30 @@ window.__ModuleLoader__.load({
     }
     var TREND_DOT = { fill: '#ffffff' }
     var TREND_LABEL = Object.assign({}, DIM, { fontSize: '10px' })
+    var TREND_NOTE = Object.assign({}, DIM, { fontSize: '11px', marginTop: '4px' })
+
+    // The index is computed from either the watch history or the home feed, never
+    // from theme counts, and the two samples score several points apart. Without
+    // the sample named under the line the chart reads as "how varied my home feed
+    // is", which is the one thing it does not measure.
+    var BASIS_CAVEAT = '这个数只看分区和 UP 散不散，不含题材'
+
+    function trendBasisNote(points) {
+      var last = null
+      for (var i = points.length - 1; i >= 0; i--) {
+        var p = points[i]
+        if (!p || typeof p !== 'object') continue
+        if (p.basis === 'history' || p.basis === 'feed') {
+          last = p
+          break
+        }
+      }
+      if (last === null) return BASIS_CAVEAT
+      var source = last.basis === 'history' ? '观看历史' : '首页推荐'
+      var samples = num(last.samples)
+      if (samples === null || samples <= 0) return '基于' + source + ' — ' + BASIS_CAVEAT
+      return '基于' + source + ' ' + samples + ' 条 — ' + BASIS_CAVEAT
+    }
 
     function pct(x) {
       var n = Number(x)
@@ -110,6 +134,17 @@ window.__ModuleLoader__.load({
       if (t !== 'number' && t !== 'string') return null
       var n = Number(x)
       return Number.isFinite(n) ? n : null
+    }
+
+    // The pill's number: the distinct-video ratio is the honest one, because the
+    // row ratio is inflated by the guest feed being resampled from a much smaller
+    // pool. An older summary only has the row ratio, so fall back to it rather
+    // than hiding the badge.
+    function badgeRatio(data) {
+      if (!data || data.ok !== true || !data.headline || typeof data.headline !== 'object') return null
+      var dedup = num(data.headline.ratioDedup)
+      if (dedup !== null) return dedup
+      return num(data.headline.ratio)
     }
 
     // The headline of the expanded block: how many rows the theme held and how
@@ -171,6 +206,113 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // 8.15 -> '8.2', 10 -> '10'. Kept short on purpose: this number is a count of
+    // themes, not a score, so two decimals would overstate its precision.
+    function themeCountText(n) {
+      return Number.isInteger(n) ? String(n) : n.toFixed(1)
+    }
+
+    // The share and the baseline come from the host already on the same measure
+    // (distinct videos), so the multiple is exactly those two divided and nothing
+    // here has to re-derive a pair. Pulling a matching share out of
+    // `amplification` was a client-side patch for a host that counted the
+    // baseline in rows; with the host fixed it would only hide future drift.
+    function focusPair(top) {
+      var share = num(top.share)
+      var baseline = num(top.baselineShare)
+      var multiple = null
+
+      if (baseline !== null && baseline > 0) {
+        if (share !== null) multiple = share / baseline
+      } else if (baseline === null && share !== null) {
+        // No baseline to divide by: quote the host's multiple on its own, dedup
+        // first for the same reason the badge prefers it.
+        multiple = num(top.ratioDedup)
+        if (multiple === null) multiple = num(top.ratio)
+      }
+
+      return { share: share, baseline: baseline, multiple: multiple }
+    }
+
+    var FOCUS_SECTION = {
+      marginTop: '2px',
+      marginBottom: '8px',
+      paddingTop: '8px',
+      paddingBottom: '8px',
+      borderTop: '1px solid rgba(255,255,255,0.1)',
+      borderBottom: '1px solid rgba(255,255,255,0.1)',
+    }
+    var FOCUS_HEAD = { fontWeight: 600, marginBottom: '4px' }
+    var FOCUS_ROW = { display: 'flex', justifyContent: 'space-between', gap: '8px' }
+    var FOCUS_LEFT = {
+      minWidth: 0,
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+    }
+
+    // What the home feed is actually made of, above the per-theme table. Every
+    // number here is read from `feedFocus` alone. A field that is missing drops
+    // its own line; a block with no lead theme at all renders nothing, because a
+    // half-filled block reads as "measured zero".
+    function feedFocusBlock(focus) {
+      if (!focus || typeof focus !== 'object') return null
+      var top = focus.top
+      if (!top || typeof top !== 'object') return null
+      var name = typeof top.name === 'string' && top.name !== '' ? top.name : null
+      if (name === null) return null
+
+      var pair = focusPair(top)
+      if (pair.share === null) return null
+
+      var top3 = num(focus.top3Share)
+      var effective = num(focus.effectiveThemes)
+      var total = num(focus.totalThemes)
+
+      var left = []
+      if (pair.baseline !== null) left.push('游客基线 ' + pct(pair.baseline))
+      if (pair.multiple !== null) left.push(pair.multiple.toFixed(1) + '×')
+
+      var countText = null
+      if (effective !== null) {
+        countText = '有效主题 ' + themeCountText(effective)
+        if (total !== null) countText += ' / ' + themeCountText(total)
+      }
+
+      return h(
+        'div',
+        { style: FOCUS_SECTION },
+        h('div', { style: FOCUS_HEAD }, '首页题材集中度'),
+        h(
+          'div',
+          { style: FOCUS_ROW },
+          h('span', { style: FOCUS_LEFT }, name),
+          h('span', { style: NUM }, pct(pair.share)),
+        ),
+        left.length || top3 !== null
+          ? h(
+              'div',
+              { style: Object.assign({}, FOCUS_ROW, DIM) },
+              h('span', { style: FOCUS_LEFT }, left.join(' · ')),
+              h('span', { style: NUM }, top3 === null ? '' : '前 3 主题 ' + pct(top3)),
+            )
+          : null,
+        countText === null
+          ? null
+          : h('div', { style: Object.assign({}, DIM, { marginTop: '2px' }) }, countText),
+      )
+    }
+
+    // A theme's share in the table. The dedup measure is the main one now: the
+    // guest feed repeats 38 videos across 82 rows, so rows understate the guest
+    // baseline. Old summaries carry only the row shares, so fall back to those.
+    function shareCell(a, dedupKey, rowKey) {
+      var dedup = num(a[dedupKey])
+      if (dedup !== null) return pct(dedup)
+      var row = num(a[rowKey])
+      return row === null ? '-' : pct(row)
+    }
+
     function themeRow(a, attr, expanded, onToggle) {
       a = a || {}
       var id = a.id !== undefined && a.id !== null ? String(a.id) : ''
@@ -188,8 +330,8 @@ window.__ModuleLoader__.load({
             a.name === null || a.name === undefined ? '未知主题' : a.name,
           ),
         ),
-        h('span', { key: 'guest', style: Object.assign({}, NUM, DIM) }, pct(a.guestShare)),
-        h('span', { key: 'login', style: Object.assign({}, NUM, { fontWeight: 600 }) }, pct(a.loginShare)),
+        h('span', { key: 'guest', style: Object.assign({}, NUM, DIM) }, shareCell(a, 'guestShareDedup', 'guestShare')),
+        h('span', { key: 'login', style: Object.assign({}, NUM, { fontWeight: 600 }) }, shareCell(a, 'loginShareDedup', 'loginShare')),
         h('span', { key: 'history', style: Object.assign({}, NUM, DIM) }, pct(a.historyShare)),
       ]
 
@@ -333,7 +475,7 @@ window.__ModuleLoader__.load({
             viewBox: '0 0 ' + TREND_W + ' ' + TREND_H,
             style: TREND_SVG,
             role: 'img',
-            'aria-label': '茧房指数近况',
+            'aria-label': '分区-UP 集中度近况',
           },
           marks,
         ),
@@ -357,9 +499,44 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { style: TREND_SECTION },
-        h('div', { style: TREND_HEAD }, h('span', null, title), h('span', null, count + ' 天数据')),
+        h(
+          'div',
+          { style: TREND_HEAD },
+          h('span', null, '分区-UP 集中度'),
+          h('span', null, title + ' · ' + count + ' 天数据'),
+        ),
         chart.node,
+        h('div', { style: TREND_NOTE }, trendBasisNote(points)),
       )
+    }
+
+    // The meta line under the title. The guest sample is resampled from a far
+    // smaller pool than the login feed (2026-11-02: 82 rows over 38 videos), so
+    // two bare row counts advertise a symmetry the samples do not have. When the
+    // host reports the dedup unit counts, name them; without them, print the old
+    // row wording rather than a number the summary never sent.
+    function metaLine(data) {
+      var d = data && typeof data === 'object' ? data : {}
+      var parts = []
+
+      var date = typeof d.date === 'string' && d.date !== '' ? d.date : null
+      if (date !== null) parts.push(date)
+
+      var rounds = num(d.rounds)
+      if (rounds !== null) parts.push(rounds + ' 轮')
+
+      var login = num(d.login && typeof d.login === 'object' ? d.login.count : null)
+      var guest = num(d.guest && typeof d.guest === 'object' ? d.guest.count : null)
+      var units = d.feedFocus && typeof d.feedFocus === 'object' ? d.feedFocus.units : null
+      var guestUnits = units && typeof units === 'object' ? num(units.guest) : null
+
+      var guestText = guest === null ? '? 条' : guest + ' 条'
+      if (guest !== null && guestUnits !== null && guestUnits > 0 && guestUnits !== guest) {
+        guestText = guest + ' 行（' + guestUnits + ' 支）'
+      }
+
+      parts.push('登录取 ' + (login === null ? '?' : login) + ' 条 / 游客 ' + guestText)
+      return parts.join(' · ')
     }
 
     function Body(props) {
@@ -391,7 +568,8 @@ window.__ModuleLoader__.load({
         )
       }
 
-      var rows = (data.amplification || []).slice(0, 4)
+      // A malformed amplification list must not take the panel down with it.
+      var rows = Array.isArray(data.amplification) ? data.amplification.slice(0, 4) : []
 
       // Older summaries have no attribution; build a lookup that tolerates both
       // a missing field and malformed entries.
@@ -404,9 +582,26 @@ window.__ModuleLoader__.load({
       }
 
       var advice = data.advice && typeof data.advice.text === 'string' && data.advice.text ? data.advice.text : ''
-      var fallbackLine = rows[0]
-        ? '这一周算法在你身上加码最多的是 ' + rows[0].name + '（' + (rows[0].ratio === null ? '路人没看到' : rows[0].ratio + '×') + '）。'
-        : null
+
+      // The fallback sentence is a multiple too, so it uses the same measure as
+      // the badge and the advice: dedup first, rows only when the summary has no
+      // dedup number at all.
+      var fallbackLine = null
+      if (rows[0] && typeof rows[0] === 'object') {
+        var rowName = typeof rows[0].name === 'string' && rows[0].name !== '' ? rows[0].name : '这个题材'
+        var rowRatio = num(rows[0].ratioDedup)
+        if (rowRatio === null) rowRatio = num(rows[0].ratio)
+        fallbackLine =
+          '这一周算法在你身上加码最多的是 ' +
+          rowName +
+          '（' +
+          (rowRatio === null ? '路人没看到' : rowRatio.toFixed(2) + '×') +
+          '）。'
+      }
+
+      // Same guard as the meta line: a summary without a login object must still
+      // render, and a missing coverage is a gap rather than 0%.
+      var loginCoverage = data.login && typeof data.login === 'object' ? num(data.login.coverage) : null
 
       return h(
         'div',
@@ -414,8 +609,9 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: Object.assign({}, DIM, { marginBottom: '8px' }) },
-          data.date + ' · ' + data.rounds + ' 轮 · 登录取 ' + data.login.count + ' 条 / 游客 ' + data.guest.count + ' 条',
+          metaLine(data),
         ),
+        feedFocusBlock(data.feedFocus),
         h(
           'div',
           { style: { display: 'grid', gridTemplateColumns: '1fr 46px 46px 46px', gap: '4px', paddingBottom: '4px' } },
@@ -434,7 +630,7 @@ window.__ModuleLoader__.load({
         h('div', { style: { marginTop: '10px', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '8px' } },
           advice ? h('div', { style: { whiteSpace: 'pre-wrap' } }, advice) : fallbackLine,
           h('div', { style: Object.assign({}, DIM, { marginTop: '4px' }) },
-            '顺序按「推给你 − 路人」排；覆盖率 ' + pct(data.login.coverage) + '，未分类不计入比值。'),
+            '顺序按「推给你 − 路人」排；覆盖率 ' + (loginCoverage === null ? '-' : pct(loginCoverage)) + '，未分类不计入比值。'),
         ),
       )
     }
@@ -482,9 +678,10 @@ window.__ModuleLoader__.load({
         }
       }, [attempt])
 
-      var label = '茧房'
-      if (phase === 'error') label = '茧房 ?'
-      else if (data && data.ok && data.headline) label = '茧房 ' + data.headline.ratio + '×'
+      // "题材" not "茧房": the number is one theme's amplification against the
+      // guest baseline, not how narrow the feed as a whole is.
+      var ratio = badgeRatio(data)
+      var label = ratio === null ? '题材 ?' : '题材 ' + ratio.toFixed(1) + '×'
 
       return h(
         'div',
@@ -493,7 +690,10 @@ window.__ModuleLoader__.load({
           'button',
           {
             type: 'button',
-            title: data && data.ok && data.headline ? data.headline.name + ' ' + data.headline.ratio + '×（相对游客基线）' : 'B站信息茧房',
+            title:
+              data && data.ok && data.headline && ratio !== null
+                ? data.headline.name + ' ' + ratio.toFixed(1) + '×（相对游客基线，按去重视频算）'
+                : 'B站首页题材放大倍数',
             onClick: function () {
               setOpen(!open)
             },
@@ -505,7 +705,7 @@ window.__ModuleLoader__.load({
           ? h(
               'div',
               { style: PANEL_STYLE },
-              h('div', { style: { fontWeight: 600, marginBottom: '8px' } }, 'B站信息茧房'),
+              h('div', { style: { fontWeight: 600, marginBottom: '8px' } }, 'B站首页题材'),
               h(Body, {
                 phase: phase,
                 data: data,
