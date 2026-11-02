@@ -114,19 +114,50 @@ function topThemes(counts, total, themeName, limit = 5) {
 
 function buildThemeStats(rows, themes, tagMap) {
   const counts = new Map();
+  const verdicts = [];
   for (const r of rows) {
     const id = themes.classifyTheme(r.title, r.tname, tagsOf(tagMap, r.bvid));
     counts.set(id, (counts.get(id) ?? 0) + 1);
+    verdicts.push({ bvid: r.bvid, id });
   }
   const unclassified = counts.get(themes.UNCLASSIFIED) ?? 0;
   const classified = rows.length - unclassified;
   const classifiedCounts = new Map([...counts].filter(([id]) => id !== themes.UNCLASSIFIED));
+
+  // Dedup measure: one unit per distinct bvid, first row wins. The guest feed is
+  // resampled from a much smaller pool than the login feed (2026-11-02: 84 login
+  // rows = 84 videos, 82 guest rows = 38 videos), so counting rows dilutes the
+  // guest baseline and inflates every ratio built on it. A row without a bvid
+  // cannot be recognised as a repeat, so it stays its own unit.
+  const seen = new Set();
+  const dedupCounts = new Map();
+  for (const { bvid, id } of verdicts) {
+    if (bvid) {
+      if (seen.has(bvid)) continue;
+      seen.add(bvid);
+    }
+    dedupCounts.set(id, (dedupCounts.get(id) ?? 0) + 1);
+  }
+  const dedupUnclassified = dedupCounts.get(themes.UNCLASSIFIED) ?? 0;
+  const dedupCount = [...dedupCounts.values()].reduce((a, b) => a + b, 0);
+  const dedupClassified = dedupCount - dedupUnclassified;
+  const dedupClassifiedCounts = new Map(
+    [...dedupCounts].filter(([id]) => id !== themes.UNCLASSIFIED),
+  );
+
   return {
     count: rows.length,
     classified,
     coverage: pct(classified, rows.length),
     counts: classifiedCounts,
     top: topThemes(classifiedCounts, classified, themes.themeName),
+    dedup: {
+      count: dedupCount,
+      classified: dedupClassified,
+      coverage: pct(dedupClassified, dedupCount),
+      counts: dedupClassifiedCounts,
+      top: topThemes(dedupClassifiedCounts, dedupClassified, themes.themeName),
+    },
   };
 }
 
@@ -149,13 +180,22 @@ function buildAmplification(expoRows, history, themes, tagMap) {
       const g = guest.counts.get(id) ?? 0;
       const loginShare = pct(l, login.classified);
       const guestShare = pct(g, guest.classified);
+      // Same quantity on the dedup measure: distinct videos, not sampled rows.
+      // Both are reported - the row ratio is what earlier numbers were built on,
+      // the dedup ratio is the one that is not polluted by guest resampling.
+      const loginShareDedup = pct(login.dedup.counts.get(id) ?? 0, login.dedup.classified);
+      const guestShareDedup = pct(guest.dedup.counts.get(id) ?? 0, guest.dedup.classified);
       return {
         id,
         name: themes.themeName(id),
         loginShare,
         guestShare,
+        loginShareDedup,
+        guestShareDedup,
         historyShare: historyShares.get(id) ?? 0,
         ratio: guestShare > 0 ? Number((loginShare / guestShare).toFixed(2)) : null,
+        ratioDedup:
+          guestShareDedup > 0 ? Number((loginShareDedup / guestShareDedup).toFixed(2)) : null,
       };
     })
     .filter((a) => a.loginShare > 0 || a.guestShare > 0)
@@ -166,6 +206,71 @@ function buildAmplification(expoRows, history, themes, tagMap) {
 }
 
 // ----------------------------------------------------------------------
+// Feed focus
+// ----------------------------------------------------------------------
+
+// exp(Shannon entropy) over classified theme counts: "how many themes does this
+// feed effectively contain". Ten themes at equal share gives 10, one theme 1.
+function themeEntropy(counts) {
+  let total = 0;
+  for (const n of counts.values()) total += n;
+  if (total <= 0) return 0;
+  let h = 0;
+  for (const n of counts.values()) {
+    const p = n / total;
+    if (p > 0) h -= p * Math.log(p);
+  }
+  return h;
+}
+
+// Size of the theme vocabulary, from the themes module rather than from the data:
+// a feed that only hits 4 themes has still been measured against all of them.
+function themeVocabularySize(themes) {
+  if (Array.isArray(themes?.THEMES)) return themes.THEMES.length;
+  if (themes?.THEME_NAMES instanceof Map) return Math.max(0, themes.THEME_NAMES.size - 1);
+  return null;
+}
+
+// The home-feed block: what the login feed is made of. The two shares in `top`
+// are on the dedup measure - one unit per distinct video - i.e. the same measure
+// as `ratioDedup`, because the guest feed is resampled from a much smaller pool:
+// a row share next to a dedup ratio reads as a contradiction (24.4% over 9.4% is
+// 2.6x, yet the same screen labels it 1.83x). `baselineShareRows` keeps the row
+// baseline for diagnostics only; never divide the dedup ratio by it.
+// `top3Share` is still the row sum: it is a breadth figure next to a table of
+// shares, not a multiple, so it cannot contradict `ratioDedup`; it is the one
+// field here that stays on the row measure for comparability with the older
+// reports. Effective theme count is taken over dedup counts on purpose: counting
+// one video once per re-sample would move it without the feed having changed.
+function buildFeedFocus(login, guest, themes, amplification) {
+  const ranked = [...amplification].sort((a, b) => b.loginShare - a.loginShare);
+  const lead = ranked[0] ?? null;
+  if (!lead || lead.loginShare <= 0) return null;
+
+  return {
+    top: {
+      id: lead.id,
+      name: lead.name,
+      // Row shares are the fallback only for a caller that hands over rows built
+      // before the dedup measure existed; both fields then agree with each other.
+      share: lead.loginShareDedup ?? lead.loginShare,
+      baselineShare: lead.guestShareDedup ?? lead.guestShare,
+      baselineShareRows: lead.guestShare,
+      ratio: lead.ratio,
+      ratioDedup: lead.ratioDedup,
+    },
+    top3Share: Number(ranked.slice(0, 3).reduce((sum, a) => sum + a.loginShare, 0).toFixed(4)),
+    effectiveThemes: Number(Math.exp(themeEntropy(login.dedup.counts)).toFixed(2)),
+    totalThemes: themeVocabularySize(themes),
+    units: { login: login.dedup.count, guest: guest.dedup.count },
+    repeatRate: {
+      login: repeatRateOf(login.count - login.dedup.count, login.count),
+      guest: repeatRateOf(guest.count - guest.dedup.count, guest.count),
+    },
+  };
+}
+
+// ----------------------------------------------------------------------
 // Attribution
 // ----------------------------------------------------------------------
 
@@ -173,8 +278,20 @@ const ATTRIBUTION_RATIO = 1.2;
 const ATTRIBUTION_LIMIT = 3;
 const DOMINANT_UP_SHARE = 0.3;
 
+// Missing values must stay missing: null/undefined/'' are not 0 here, because 0
+// is a real ratio and 0.00x would be a wrong claim rather than a gap. Anything
+// unusable returns the caller's fallback instead of poisoning the text with NaN.
+function numberOr(value, fallback) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 const formatShare = (share) => `${(Number(share) * 100).toFixed(1)}%`;
-const formatRatio = (ratio) => Number(ratio).toFixed(2);
+const formatRatio = (ratio) => {
+  const n = numberOr(ratio, null);
+  return n === null ? '?' : n.toFixed(2);
+};
 const formatUpShare = (share) => `${(Number(share) * 100).toFixed(0)}%`;
 
 function uploaderKey(row) {
@@ -243,6 +360,10 @@ function buildAttribution(themes, amplification, loginRows, tagMap) {
       id: a.id,
       name: a.name,
       ratio: a.ratio,
+      // Same multiple on the dedup measure, so the advice sentence can quote the
+      // number the badge shows instead of mixing the two measures. Null when the
+      // guest baseline has no distinct video in this theme; advice falls back.
+      ratioDedup: a.ratioDedup,
       loginShare: a.loginShare,
       guestShare: a.guestShare,
       appearances,
@@ -262,7 +383,12 @@ function buildAdvice(attribution, headlineId) {
     attribution.find((a) => a.id === headlineId) ??
     attribution.reduce((best, cur) => (cur.ratio > best.ratio ? cur : best), attribution[0]);
   const lead = top.topUps[0];
-  const head = `${top.name} 占你首页 ${formatShare(top.loginShare)}，是游客基线的 ${formatRatio(top.ratio)} 倍。`;
+  // The badge and the feed-focus block both quote the dedup multiple, so this
+  // sentence has to as well: 24.4% over a 13.3% baseline is 1.83x, and printing
+  // 2.60x here put two answers to the same question on one screen. `ratio` is
+  // still returned below; it is the row measure, kept for comparability.
+  const multiple = numberOr(top.ratioDedup, numberOr(top.ratio, null));
+  const head = `${top.name} 占你首页 ${formatShare(top.loginShare)}，是游客基线的 ${formatRatio(multiple)} 倍。`;
 
   if (lead && lead.share >= DOMINANT_UP_SHARE) {
     const who = lead.name ?? (lead.mid === null || lead.mid === undefined ? null : `mid ${lead.mid}`);
@@ -273,6 +399,7 @@ function buildAdvice(attribution, headlineId) {
         theme: top.id,
         name: top.name,
         ratio: top.ratio,
+        ratioDedup: multiple,
         kind: 'narrow',
         text: `${head}其中 ${formatUpShare(lead.share)} 来自同一 UP 主「${who}」${tail} —— 想收窄，先别点这类封面。`,
       };
@@ -283,6 +410,7 @@ function buildAdvice(attribution, headlineId) {
     theme: top.id,
     name: top.name,
     ratio: top.ratio,
+    ratioDedup: multiple,
     kind: 'watch',
     text: `${head}没有单一 UP 主主导，是题材层面的放大 —— 想换口味，主动搜点别的内容。`,
   };
@@ -306,7 +434,11 @@ const oneDecimal = (n) => (Number.isFinite(n) ? Number(Number(n).toFixed(1)) : n
 // One day of trend data. Each metric degrades to null on its own so a single
 // bad day (or a throwing call) never removes the point from the line.
 function trendPoint(db, date, themes, cocoon, tagMap) {
-  const point = { date, cocoon: null, amplification: null, themes: null, samples: 0 };
+  // `basis` says which sample the cocoon number came from ('history' once the day
+  // has at least 10 history rows, otherwise 'feed'). The number is meaningless
+  // without it: the same formula scores the history sample and the home feed
+  // differently by several points, so the front end has to label the point.
+  const point = { date, cocoon: null, amplification: null, themes: null, samples: 0, basis: null };
   const snap = { feed: [], history: [], ranking: [] };
 
   try {
@@ -314,7 +446,13 @@ function trendPoint(db, date, themes, cocoon, tagMap) {
       .prepare('SELECT source, bvid, tid, tname, mid, upName, title FROM snapshot WHERE date = ?')
       .all(date);
     for (const row of trendItems(rows, tagMap)) {
-      const bucket = snap[row.source];
+      // snapshot stores the home feed under source 'rcmd'; the analyser calls it
+      // 'feed'. Bucketing on the raw source silently dropped every feed row, so a
+      // day with 28 rcmd rows and thin history scored as "no data" and no point
+      // could ever be feed-based. Alias it instead of renaming the stored value:
+      // existing databases keep working.
+      const bucketKey = row.source === 'rcmd' ? 'feed' : row.source;
+      const bucket = snap[bucketKey];
       if (Array.isArray(bucket)) bucket.push(row);
     }
   } catch {
@@ -334,6 +472,7 @@ function trendPoint(db, date, themes, cocoon, tagMap) {
       // rather than drawing a misleading "wide open" point.
       if (index !== null && size > 0) {
         point.cocoon = index;
+        point.basis = score?.basis === 'feed' ? 'feed' : 'history';
         sampleSize = size;
       }
     } catch {
@@ -468,7 +607,20 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
       attributionError = String(err && err.message ? err.message : err);
     }
 
-    const headline = head ? { id: head.id, name: head.name, ratio: head.ratio } : null;
+    const headline = head
+      ? { id: head.id, name: head.name, ratio: head.ratio, ratioDedup: head.ratioDedup }
+      : null;
+
+    // Home-feed composition block. An enhancement like attribution: if it cannot
+    // be built, the panel keeps every other field instead of going dark.
+    let feedFocus = null;
+    let feedFocusError = null;
+    try {
+      feedFocus = buildFeedFocus(login, guest, themes, amplification);
+    } catch (err) {
+      feedFocus = null;
+      feedFocusError = String(err && err.message ? err.message : err);
+    }
 
     let trend;
     let trendError = null;
@@ -496,10 +648,12 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
       history: { count: history.count, coverage: history.coverage, top: history.top },
       amplification: amplification.slice(0, 6),
       headline,
+      feedFocus,
       attribution,
       advice,
       trend,
       ...(attributionError === null ? {} : { attributionError }),
+      ...(feedFocusError === null ? {} : { feedFocusError }),
       ...(trendError === null ? {} : { trendError }),
     };
   } catch (err) {

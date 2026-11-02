@@ -181,6 +181,15 @@ function bootstrapEntropyCI(cats, seed, reps = 400) {
 // Theme evidence (title > region > tag) feeds the `themes` diagnostic block and
 // never enters `index`: connecting tags to this function changes what the panel
 // says about themes, not the 0..100 cocoon number.
+//
+// `subscores.repetition` is the odd one out: it is the share of uploaders that
+// appear more than once, and it carries no weight at all. The index uses the
+// uploader Gini instead, which measures how unevenly the sample spreads across
+// uploaders rather than just how many names repeat. The panel showed the number
+// without that distinction, so `indexWeights` spells out which subscores actually
+// move the index - 0 means "shown for diagnosis, contributes nothing".
+const INDEX_WEIGHTS = { diversity: 0.55, concentration: 0.25, repetition: 0 };
+
 export function cocoonScore(input = {}, options = {}) {
   const feed = input.feed ?? [];
   const history = input.history ?? [];
@@ -197,6 +206,7 @@ export function cocoonScore(input = {}, options = {}) {
       hhi: 0, gini: 0, top10Share: 0, overlapWithRanking: 0, uploaderRepeat: 0, calibration: 0,
       reasonMix: reasonMix(feed),
       subscores: { diversity: 0, concentration: 0, repetition: 0 },
+      indexWeights: { ...INDEX_WEIGHTS },
       topCategories: [], topUploaders: [],
       themes: { coverage: 0, unclassified: 0, concentration: 0, entropy: 0, effective: 0, topName: null, topShare: 0, top: [] },
       quality: { mappedRatio: 0, feedMappedRatio: 0, minSampleForConfidence: 100, sampleSufficient: false },
@@ -243,6 +253,10 @@ export function cocoonScore(input = {}, options = {}) {
 
   return {
     date,
+    // Which sample the index was computed from. Every consumer that shows the
+    // number must label it: at the 2026-11-02 library the 210 history rows give
+    // 21.1 while the 84 home-feed rows give 14.9 on the identical formula, and
+    // showing 21.1 without this label reads as a claim about the home feed.
     basis,
     sampleSize: sample.length,
     feedSize: feed.length,
@@ -268,6 +282,11 @@ export function cocoonScore(input = {}, options = {}) {
       concentration: Number((concentration * 100).toFixed(1)),
       repetition: Number((uploaderRepeat * 100).toFixed(1)),
     },
+
+    // Which subscores feed `index`, and with what weight. `repetition: 0` is not
+    // a rounding artefact: it is a diagnostic quantity, and moving the index is
+    // deliberately out of its hands.
+    indexWeights: { ...INDEX_WEIGHTS },
 
     topCategories: sortedCats.slice(0, 5).map(([name, n]) => ({ name, n })),
     topUploaders: sortedUps.slice(0, 5).map(([name, n]) => ({ name, n })),

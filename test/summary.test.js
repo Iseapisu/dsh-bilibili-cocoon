@@ -202,8 +202,12 @@ test('summary：advice 在单一 UP 主导时为 narrow', async () => {
   assert.equal(r.advice.theme, 'ai');
   assert.equal(r.advice.name, 'AI / 大模型');
   assert.equal(r.advice.ratio, 2.5);
+  // The sentence quotes the multiple the badge shows: 2/7 of the login videos
+  // over 2/10 of the guest videos = 1.43, not the 2.50 row ratio.
+  assert.equal(r.advice.ratioDedup, 1.43);
   assert.match(r.advice.text, /50\.0%/);
-  assert.match(r.advice.text, /2\.50 倍/);
+  assert.match(r.advice.text, /1\.43 倍/);
+  assert.ok(!r.advice.text.includes('2.50'), r.advice.text);
   assert.ok(r.advice.text.includes('UP甲'));
   assert.ok(r.advice.text.includes('重复曝光 3 次'));
   assert.ok(r.advice.text.includes('想收窄'));
@@ -921,5 +925,177 @@ test('video_tag：不影响 snapshot/exposure 的读写', async () => {
 
     assert.equal(typeof file, 'string');
   });
+});
+
+// ----------------------------------------------------------------------
+// Dedup measure and feed focus
+// ----------------------------------------------------------------------
+
+// login: 6 distinct rows (ai 4, game 2). guest: 8 rows over 3 distinct game
+// videos + 2 distinct ai videos, i.e. 5 distinct videos in total. The guest rows
+// repeat, so the row measure dilutes the ai share (2/8 = 0.25) while the dedup
+// measure does not (2/5 = 0.40).
+const REPEAT_HEAVY_EXPOSURE = [
+  {
+    kind: 'login',
+    round: 1,
+    items: [ai('BVla1'), ai('BVla2'), ai('BVla3'), ai('BVla4'), game('BVlg1'), game('BVlg2')],
+  },
+  {
+    kind: 'guest',
+    round: 1,
+    items: [
+      makeItem('BVga1', '大模型评测', 500, '路人甲'),
+      makeItem('BVga2', '大模型评测', 501, '路人乙'),
+      game('BVgg1', 200, '游戏UP'),
+      game('BVgg2', 200, '游戏UP'),
+      game('BVgg3', 200, '游戏UP'),
+    ],
+  },
+  {
+    kind: 'guest',
+    round: 2,
+    items: [game('BVgg1', 200, '游戏UP'), game('BVgg2', 200, '游戏UP'), game('BVgg3', 200, '游戏UP')],
+  },
+];
+
+test('summary：amplification 与 headline 同时给出行数口径和去重口径倍数', async () => {
+  const r = await summaryOf(REPEAT_HEAVY_EXPOSURE);
+  assert.equal(r.ok, true);
+
+  for (const row of r.amplification) {
+    assert.ok(Object.hasOwn(row, 'ratioDedup'), `${row.id} 缺 ratioDedup`);
+    assert.ok(Object.hasOwn(row, 'ratio'), `${row.id} 缺 ratio`);
+  }
+
+  const aiRow = r.amplification.find((a) => a.id === 'ai');
+  assert.equal(aiRow.loginShare, 0.6667);
+  assert.equal(aiRow.guestShare, 0.25);
+  assert.equal(aiRow.loginShareDedup, 0.6667);
+  assert.equal(aiRow.guestShareDedup, 0.4);
+  assert.equal(aiRow.ratio, 2.67);
+  assert.equal(aiRow.ratioDedup, 1.67);
+  assert.ok(aiRow.ratioDedup < aiRow.ratio);
+
+  const gameRow = r.amplification.find((a) => a.id === 'game');
+  assert.equal(gameRow.ratio, 0.44);
+  assert.equal(gameRow.ratioDedup, 0.56);
+
+  // Headline selection is unchanged (largest login-guest gap) and now carries
+  // the dedup ratio next to the row ratio.
+  assert.equal(r.headline.id, 'ai');
+  assert.equal(r.headline.ratio, 2.67);
+  assert.equal(r.headline.ratioDedup, 1.67);
+
+  // Attribution still keys off the row ratio, so its thresholds did not move.
+  assert.equal(r.attribution.some((a) => a.id === 'ai'), true);
+});
+
+test('summary：feedFocus 结构完整，units 是去重后的视频数', async () => {
+  const r = await summaryOf(REPEAT_HEAVY_EXPOSURE);
+  assert.equal(r.ok, true);
+  assert.equal('feedFocusError' in r, false);
+
+  const focus = r.feedFocus;
+  assert.ok(focus, 'feedFocus 应被算出来');
+  assert.deepEqual(Object.keys(focus).sort(), [
+    'effectiveThemes',
+    'repeatRate',
+    'top',
+    'top3Share',
+    'totalThemes',
+    'units',
+  ]);
+  assert.deepEqual(Object.keys(focus.top).sort(), [
+    'baselineShare',
+    'baselineShareRows',
+    'id',
+    'name',
+    'ratio',
+    'ratioDedup',
+    'share',
+  ]);
+
+  assert.equal(focus.top.id, 'ai');
+  assert.equal(focus.top.name, 'AI / 大模型');
+  assert.equal(focus.top.share, 0.6667);
+  // Both shares are the dedup measure, so the multiple is exactly these two
+  // divided; the row baseline survives only as a diagnostic.
+  assert.equal(focus.top.baselineShare, 0.4);
+  assert.equal(focus.top.baselineShareRows, 0.25);
+  assert.equal(focus.top.ratio, 2.67);
+  assert.equal(focus.top.ratioDedup, 1.67);
+  assert.equal(
+    Number((focus.top.share / focus.top.baselineShare).toFixed(2)),
+    focus.top.ratioDedup,
+  );
+
+  // Two themes cover the whole login feed.
+  assert.equal(focus.top3Share, 1);
+  // exp(entropy) over the login dedup counts: 4 ai + 2 game.
+  assert.equal(focus.effectiveThemes, 1.89);
+  assert.equal(focus.totalThemes, THEMES.length);
+
+  // 6 login rows = 6 videos, 8 guest rows = 5 videos.
+  assert.deepEqual(focus.units, { login: 6, guest: 5 });
+  assert.deepEqual(focus.repeatRate, { login: 0, guest: 0.38 });
+});
+
+test('summary：feedFocus 算不出来时为 null，其余字段照常', async () => {
+  const exposure = [
+    {
+      kind: 'login',
+      round: 1,
+      items: [makeItem('BVn1', '挤爆了'), makeItem('BVn2', '随便看看')],
+    },
+    { kind: 'guest', round: 1, items: [ai('BVga1'), ai('BVga2')] },
+  ];
+  const r = await summaryOf(exposure);
+
+  assert.equal(r.ok, true);
+  assert.equal(r.feedFocus, null);
+  assert.equal('feedFocusError' in r, false);
+  assert.equal(r.login.count, 2);
+  assert.equal(r.guest.count, 2);
+  assert.ok(Array.isArray(r.amplification));
+  assert.ok(r.trend);
+});
+
+test('trend：每个 point 带 basis，标明该点采样自观看历史还是首页 feed', async () => {
+  const feedDay = (count) =>
+    Array.from({ length: count }, (_, i) => ({
+      bvid: `BVf${i}`,
+      title: ['大模型评测', '游戏攻略', '美食探店'][i % 3],
+      mid: 800 + i,
+      upName: `推荐UP${i}`,
+      tid: 1,
+      tname: null,
+    }));
+
+  const r = await summaryOfDays(
+    [
+      { date: '2026-10-31', history: historyDay() },
+      // rcmd rows only: below the history threshold, so the point is feed-based.
+      { date: '2026-11-01', feed: feedDay(12) },
+      // Three history rows and no feed: no usable sample at all.
+      { date: TREND_END, history: historyDay(3) },
+    ],
+    exposureFor(TREND_END),
+  );
+  assert.equal(r.ok, true);
+  assert.deepEqual(
+    r.trend.points.map((p) => p.date),
+    ['2026-10-31', '2026-11-01', TREND_END],
+  );
+  assert.deepEqual(
+    r.trend.points.map((p) => p.basis),
+    ['history', 'feed', null],
+  );
+  assert.equal(r.trend.points[0].samples, 210);
+  assert.equal(r.trend.points[1].samples, 12);
+  assert.equal(r.trend.points[1].cocoon, Number(r.trend.points[1].cocoon));
+  assert.equal(r.trend.points[2].cocoon, null);
+  // A point with no usable sample must not claim a basis either.
+  assert.equal(r.trend.points[2].basis, null);
 });
 

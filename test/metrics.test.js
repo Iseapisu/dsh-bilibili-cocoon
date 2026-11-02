@@ -247,7 +247,9 @@ test('renderReport：含结论、指标、建议；小样本给出提示', () =>
   const markdown = renderReport(result);
 
   assert.ok(markdown.split('\n')[0].includes('结论'));
-  assert.ok(markdown.includes('信息茧房指数'));
+  assert.ok(markdown.includes('分区-UP 集中度'));
+  assert.ok(markdown.includes('不反映题材'), '结论必须点明这个数不含题材维度');
+  assert.ok(markdown.includes('57%'), '结论必须给出「偏窄」门槛，避免把「开阔」读成没问题');
   assert.ok(markdown.includes(String(result.index)));
   assert.ok(markdown.includes(result.level));
   assert.ok(markdown.includes('多样性'));
@@ -382,4 +384,61 @@ test('cocoonScore：tags 为 null / 脏值时等同于不传 tags', () => {
   assert.equal(withNulls.themes.unclassified, 1);
   assert.equal(without.themes.unclassified, 3);
   assert.equal(withNulls.index, without.index);
+});
+
+// ----------------------------------------------------------------------
+// Exposed weights and sampling basis
+// ----------------------------------------------------------------------
+
+// Golden numbers captured from the implementation before this change. Nothing in
+// this task may move them: the formula, the rounding and the level thresholds are
+// frozen, only already-computed values get surfaced.
+test('cocoonScore：index 与改动前逐位一致（回归基线）', () => {
+  const feed = loadFixture('feed.json');
+  const ranking = loadFixture('ranking.json');
+  const history = Array.from({ length: 30 }, (_, i) =>
+    makeItem(i, { bvid: `BVhist${i}`, tname: i < 20 ? '游戏' : '知识', upName: `UP${i % 5}` }),
+  );
+
+  const feedBasis = cocoonScore({ feed, history: [], ranking, date: '2026-10-30' });
+  assert.equal(feedBasis.index, 70.5);
+  assert.equal(feedBasis.level, '强茧房');
+
+  const historyBasis = cocoonScore({ feed, history, ranking, date: '2026-10-30' });
+  assert.equal(historyBasis.index, 57);
+  assert.equal(historyBasis.level, '明显收窄');
+
+  const empty = cocoonScore({ date: '2026-10-30' });
+  assert.equal(empty.index, 0);
+  assert.equal(empty.level, '无数据');
+});
+
+test('cocoonScore：indexWeights 标明 repetition 权重为 0，index 只由三项合成', () => {
+  const feed = loadFixture('feed.json');
+  const ranking = loadFixture('ranking.json');
+  const weights = { diversity: 0.55, concentration: 0.25, repetition: 0 };
+
+  const feedBasis = cocoonScore({ feed, history: [], ranking, date: '2026-10-30' });
+  assert.deepEqual(feedBasis.indexWeights, weights);
+  assert.equal(feedBasis.basis, 'feed');
+
+  const history = Array.from({ length: 30 }, (_, i) =>
+    makeItem(i, { bvid: `BVhist${i}`, tname: i < 20 ? '游戏' : '知识', upName: `UP${i % 5}` }),
+  );
+  const historyBasis = cocoonScore({ feed, history, ranking, date: '2026-10-30' });
+  assert.deepEqual(historyBasis.indexWeights, weights);
+  assert.equal(historyBasis.basis, 'history');
+
+  // Every uploader in that sample repeats, so repetition reads 100 - and still
+  // cannot move the index, which recomposes exactly from its three real terms.
+  assert.equal(historyBasis.subscores.repetition, 100);
+  const raw =
+    0.55 * (1 - historyBasis.entropyNorm) + 0.25 * historyBasis.hhi + 0.2 * historyBasis.gini;
+  assert.equal(historyBasis.index, Math.round(raw * 1000) / 10);
+
+  // The empty branch keeps the same contract.
+  const empty = cocoonScore({ date: '2026-10-30' });
+  assert.deepEqual(empty.indexWeights, weights);
+  assert.equal(empty.basis, 'feed');
+  assert.deepEqual(empty.subscores, { diversity: 0, concentration: 0, repetition: 0 });
 });
