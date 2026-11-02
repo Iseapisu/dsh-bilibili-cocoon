@@ -66,6 +66,37 @@ window.__ModuleLoader__.load({
       borderRadius: '4px',
     }
 
+    // Trend block geometry. Fixed numbers on purpose: the panel is a fixed 380px
+    // wide, so the plot gets a fixed 340x56 box with room above for the value
+    // labels and below for the date labels.
+    var TREND_W = 340
+    var TREND_PLOT_H = 56
+    var TREND_TOP = 16
+    var TREND_BOTTOM = 15
+    var TREND_H = TREND_TOP + TREND_PLOT_H + TREND_BOTTOM
+    var TREND_PAD_X = 18
+    var TREND_SECTION = {
+      marginTop: '10px',
+      borderTop: '1px solid rgba(255,255,255,0.1)',
+      paddingTop: '8px',
+    }
+    var TREND_HEAD = Object.assign({}, DIM, {
+      display: 'flex',
+      justifyContent: 'space-between',
+      fontSize: '11px',
+      marginBottom: '2px',
+    })
+    var TREND_SVG = { display: 'block', maxWidth: '100%', height: 'auto' }
+    var TREND_LINE = {
+      fill: 'none',
+      stroke: 'rgba(255, 255, 255, 0.8)',
+      strokeWidth: 1.5,
+      strokeLinejoin: 'round',
+      strokeLinecap: 'round',
+    }
+    var TREND_DOT = { fill: '#ffffff' }
+    var TREND_LABEL = Object.assign({}, DIM, { fontSize: '10px' })
+
     function pct(x) {
       var n = Number(x)
       return isFinite(n) ? (n * 100).toFixed(1) + '%' : '-'
@@ -205,6 +236,132 @@ window.__ModuleLoader__.load({
       return h('div', { key: id }, row, open ? expandBlock(attr) : null)
     }
 
+    // 'YYYY-MM-DD' -> 'MM-DD'. Anything else yields null so the axis just stays
+    // blank instead of printing 'undefined'.
+    function shortDate(date) {
+      if (typeof date !== 'string') return null
+      var s = date.trim()
+      return s.length >= 10 ? s.slice(5, 10) : null
+    }
+
+    // One polyline over the days that carry a usable cocoon score. A day whose
+    // score is null keeps its slot on the x axis but draws no point, so a hole in
+    // the data stays a hole instead of collapsing into a straight segment.
+    function trendChart(points) {
+      var n = points.length
+      var plotted = []
+      var min = null
+      var max = null
+
+      points.forEach(function (p, i) {
+        if (!p || typeof p !== 'object') return
+        var v = num(p.cocoon)
+        if (v === null) return
+        if (min === null || v < min) min = v
+        if (max === null || v > max) max = v
+        plotted.push({ i: i, value: v, date: shortDate(p.date) })
+      })
+      if (!plotted.length) return null
+
+      // Local domain with 25% headroom: the index lives in a narrow band, so a
+      // fixed 0-100 axis would flatten every real move into a flat line.
+      var span = max - min
+      if (!(span > 0)) span = 1
+      var lo = min - span * 0.25
+      var hi = max + span * 0.25
+
+      function xAt(i) {
+        if (n < 2) return TREND_W / 2
+        return TREND_PAD_X + ((TREND_W - TREND_PAD_X * 2) * i) / (n - 1)
+      }
+
+      function yAt(v) {
+        return TREND_TOP + (1 - (v - lo) / (hi - lo)) * TREND_PLOT_H
+      }
+
+      var marks = []
+
+      if (plotted.length > 1) {
+        marks.push(
+          h('polyline', {
+            key: 'line',
+            points: plotted
+              .map(function (p) {
+                return xAt(p.i) + ',' + yAt(p.value)
+              })
+              .join(' '),
+            style: TREND_LINE,
+          }),
+        )
+      }
+
+      plotted.forEach(function (p) {
+        var x = xAt(p.i)
+        var y = yAt(p.value)
+        marks.push(h('circle', { key: 'dot' + p.i, cx: x, cy: y, r: 2.5, style: TREND_DOT }))
+        marks.push(
+          h(
+            'text',
+            { key: 'val' + p.i, x: x, y: y - 6, textAnchor: 'middle', style: TREND_LABEL },
+            p.value.toFixed(1),
+          ),
+        )
+        if (p.date) {
+          marks.push(
+            h(
+              'text',
+              {
+                key: 'day' + p.i,
+                x: x,
+                y: TREND_TOP + TREND_PLOT_H + 11,
+                textAnchor: 'middle',
+                style: TREND_LABEL,
+              },
+              p.date,
+            ),
+          )
+        }
+      })
+
+      return {
+        count: plotted.length,
+        node: h(
+          'svg',
+          {
+            width: TREND_W,
+            height: TREND_H,
+            viewBox: '0 0 ' + TREND_W + ' ' + TREND_H,
+            style: TREND_SVG,
+            role: 'img',
+            'aria-label': '茧房指数近况',
+          },
+          marks,
+        ),
+      }
+    }
+
+    // Header line + chart, or nothing at all. An old summary has no trend and an
+    // empty one has no usable day; neither may leave a stub behind.
+    function trendSection(trend) {
+      if (!trend || typeof trend !== 'object') return null
+      var points = Array.isArray(trend.points) ? trend.points : []
+      if (!points.length) return null
+      var chart = trendChart(points)
+      if (!chart) return null
+
+      var days = num(trend.days)
+      var covered = num(trend.covered)
+      var title = days !== null && days > 0 ? '近 ' + days + ' 天' : '近 7 天'
+      var count = covered !== null && covered > 0 ? covered : chart.count
+
+      return h(
+        'div',
+        { style: TREND_SECTION },
+        h('div', { style: TREND_HEAD }, h('span', null, title), h('span', null, count + ' 天数据')),
+        chart.node,
+      )
+    }
+
     function Body(props) {
       var expandedState = React.useState(null)
       var expanded = expandedState[0]
@@ -273,6 +430,7 @@ window.__ModuleLoader__.load({
             setExpanded(expanded === nextId ? null : nextId)
           })
         }),
+        trendSection(data.trend),
         h('div', { style: { marginTop: '10px', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '8px' } },
           advice ? h('div', { style: { whiteSpace: 'pre-wrap' } }, advice) : fallbackLine,
           h('div', { style: Object.assign({}, DIM, { marginTop: '4px' }) },
