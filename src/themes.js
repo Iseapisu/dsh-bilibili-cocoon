@@ -244,9 +244,8 @@ for (const theme of THEMES) {
 //
 // 2.5k tags need one verdict each and stay valid forever; videos are turnover.
 // So the pipeline is: tag_theme table first (permanent verdicts), then the
-// lexicon (free fast path), then the unresolved queue (tools/classify-tags.mjs),
-// and only then a human or an LLM. This round only wires the first two plus the
-// queue.
+// lexicon (free fast path), and only then a human or an LLM. This round only
+// wires the first two.
 // ---
 
 // A themeMap value is either a bare theme id (host-side Map<tag, theme>) or the
@@ -261,7 +260,7 @@ const cleanTagOf = (tag) => String(tag ?? '').trim().toLowerCase();
 
 // True for tags that name the platform or a campaign rather than a subject.
 // Exported so tools/classify-tags.mjs can tell "no theme by policy" from "no
-// theme yet" and keep the review queue free of permanent noise like 'vlog'.
+// theme yet" and skip permanent noise like 'vlog'.
 export function isNoiseTag(tag) {
   const clean = cleanTagOf(tag);
   if (!clean) return false;
@@ -271,8 +270,8 @@ export function isNoiseTag(tag) {
 // Every theme the lexicon credits for one tag, in THEMES order (usually 0 or 1,
 // occasionally several for composite tags such as 'ai音乐'). Exported because
 // the offline filler has to tell an unambiguous tag (exactly one theme: safe to
-// freeze in the table) from an ambiguous one (several: needs a decider, so it
-// goes to the queue instead of being guessed).
+// freeze in the table) from an ambiguous one (several: never guessed into the
+// table).
 export function lexiconThemesOf(tag) {
   const clean = cleanTagOf(tag);
   if (!clean || isNoiseTag(clean)) return [];

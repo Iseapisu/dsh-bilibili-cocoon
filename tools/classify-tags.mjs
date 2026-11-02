@@ -1,6 +1,5 @@
 // 把 tag → 主题的判定从词根表搬进数据库：对 video_tag 里出现过的每个 tag 跑一次
-// 纯规则，能唯一判定的写进 tag_theme（永久缓存），判不出的攒进 tag_unresolved
-// 等 LLM / 人工处理。
+// 纯规则，能唯一判定的写进 tag_theme（永久缓存）；判不出的只统计个数，不落表。
 //
 // 纯本地计算：不联网、不碰 B站接口、不按视频发请求。实测 2.5k 个 tag 一瞬间跑完，
 // 所以没有 --limit，也没有必要做断点续跑。
@@ -15,11 +14,9 @@ import {
   closeStore,
   countTagThemes,
   listTagThemes,
-  listUnresolvedTags,
   listVideoTags,
   openStore,
   saveTagThemes,
-  saveUnresolvedTags,
 } from '../src/store.js';
 import { THEMES, THEME_NAMES, isNoiseTag, lexiconThemesOf } from '../src/themes.js';
 
@@ -36,13 +33,12 @@ const dbPath = path.resolve(ROOT, argOf('--db', 'data/cocoon.db'));
 const dryRun = hasFlag('--dry-run');
 
 const PROGRESS_EVERY = 500;
-const TOP_QUEUE = 10;
 
 const pct = (n, total) => (total > 0 ? ((n / total) * 100).toFixed(1) : '0.0');
 const sumCounts = (rows) => rows.reduce((acc, row) => acc + row.count, 0);
 
 // tag -> 出现在多少个视频里。同一个视频里重复出现的同一个 tag 只算一次：
-// seen_count 记的是「多少个视频用过它」，不是「出现过几次」。
+// count 记的是「多少个视频用过它」，不是「出现过几次」。
 function countTagVideos(store) {
   const videos = listVideoTags(store);
   const counts = new Map();
@@ -71,12 +67,11 @@ try {
     console.log(`video_tag：${videos} 条视频，还没有任何 tag。先跑 node tools/backfill-tags.mjs。`);
   } else {
     const existing = listTagThemes(store);
-    const queued = new Set(listUnresolvedTags(store).map((row) => row.tag));
 
     console.log(
       `video_tag：${videos} 条视频 · ${references} 个 tag 引用 / 去重后 ${tagVideos.size} 个 tag`,
     );
-    console.log(`tag_theme 已有 ${existing.size} 条 · tag_unresolved 已有 ${queued.size} 条`);
+    console.log(`tag_theme 已有 ${existing.size} 条`);
 
     // --- 分类：只处理表里还没有的 tag -------------------------------------
     // 按出现视频数降序，最常用的 tag 先落库。
@@ -108,40 +103,31 @@ try {
       console.log(`归类（对表里还没有的 ${todo.length} 个 tag 跑纯规则）：`);
       console.log(`  规则给出唯一主题  ${decided.length} 个（覆盖 ${sumCounts(decided)} 次 tag 引用）`);
       console.log(
-        `  规则给出多个主题  ${ambiguous.length} 个（覆盖 ${sumCounts(ambiguous)} 次 tag 引用）→ 歧义，进待办`,
+        `  规则给出多个主题  ${ambiguous.length} 个（覆盖 ${sumCounts(ambiguous)} 次 tag 引用）→ 歧义，按设计不记录`,
       );
       console.log(
-        `  规则判不出        ${unknown.length} 个（覆盖 ${sumCounts(unknown)} 次 tag 引用）→ 进待办`,
+        `  规则判不出        ${unknown.length} 个（覆盖 ${sumCounts(unknown)} 次 tag 引用）→ 按设计不记录`,
       );
       console.log(
-        `  噪声/活动 tag     ${noise.length} 个（覆盖 ${sumCounts(noise)} 次 tag 引用）→ 按策略不归类，也不进待办`,
+        `  噪声/活动 tag     ${noise.length} 个（覆盖 ${sumCounts(noise)} 次 tag 引用）→ 按策略不归类`,
       );
     }
-
-    // 已经在待办队列里的 tag 不重复入队：seen_count 是累加的，重跑一次就会把
-    // 同一个 tag 的权重翻倍，队列排序随之失真。
-    const toQueue = [...ambiguous, ...unknown].filter((row) => !queued.has(row.tag));
 
     if (dryRun) {
       console.log('');
       console.log(
-        `--dry-run：本次会写入 tag_theme ${decided.length} 条、tag_unresolved ${toQueue.length} 条，` +
-          '实际未写入（两张空表仍会在打开库时按 SCHEMA 建好）。',
+        `--dry-run：本次会写入 tag_theme ${decided.length} 条，实际未写入` +
+          '（tag_theme 空表仍会在打开库时按 SCHEMA 建好）。',
       );
-    } else if (decided.length || toQueue.length) {
+    } else if (decided.length) {
       const written = saveTagThemes(
         store,
         decided.map(({ tag, theme }) => ({ tag, theme, source: 'lexicon', confidence: 1 })),
       );
-      const queuedWrites = saveUnresolvedTags(
-        store,
-        toQueue.map(({ tag, count }) => ({ tag, count })),
-      );
       console.log('');
       console.log(
         `写入 tag_theme ${written.written} 条` +
-          (written.blocked ? `（${written.blocked} 条被人工资格挡住）` : '') +
-          ` · 写入 tag_unresolved ${queuedWrites.written} 条`,
+          (written.blocked ? `（${written.blocked} 条被人工资格挡住）` : ''),
       );
     }
 
@@ -180,12 +166,11 @@ try {
       .sort((a, b) => b[1] - a[1])
       .map(([source, n]) => `${source} ${n}`)
       .join(' / ');
-    const unresolvedTotal = dryRun ? queued.size + toQueue.length : final.unresolved;
 
     console.log('');
     console.log(
       `tag_theme 共 ${dryRun ? projected.size : final.total} 条（${sources || '空'}）` +
-        `${dryRun ? ' · 预计' : ''} · tag_unresolved 共 ${unresolvedTotal} 条`,
+        `${dryRun ? ' · 预计' : ''}`,
     );
     if (distribution) console.log(`主题分布：${distribution}`);
     console.log(
@@ -194,17 +179,12 @@ try {
     );
     console.log(`未解析占比（加权）：${pct(references - coveredRefs, references)}%`);
 
-    const queue = dryRun
-      ? [...ambiguous, ...unknown].sort((a, b) => b.count - a.count).slice(0, TOP_QUEUE)
-      : listUnresolvedTags(store, TOP_QUEUE);
-    if (queue.length) {
-      console.log(`待办前 ${queue.length}（按出现视频数）：`);
-      for (const row of queue) {
-        const n = row.seenCount ?? row.count;
-        const note = row.themes ? `  ← 歧义: ${row.themes.join('/')}` : '';
-        console.log(`  ${String(n).padStart(4)}  ${row.tag}${note}`);
-      }
-    }
+    // 规则判不出的 tag 只是这个数字的一部分，不落表也不排队：按实测边际收益，
+    // 处理它们换不来行级覆盖率提升，攒一个不会有人处理的待办队列是负资产。
+    const undecided = [...ambiguous, ...unknown];
+    console.log(
+      `规则判不出 ${undecided.length} 个 tag（覆盖 ${sumCounts(undecided)} 次 tag 引用）——不记录，按设计忽略`,
+    );
   }
 } finally {
   closeStore(store);

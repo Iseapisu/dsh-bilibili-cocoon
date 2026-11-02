@@ -1,6 +1,6 @@
 // Unit tests for the tag_theme migration: single-tag resolution, the frozen
 // vote that the table must not disturb, the table's CRUD, and the host's
-// degradation when the new tables are absent.
+// degradation when the new table is absent.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,11 +20,9 @@ import {
   closeStore,
   countTagThemes,
   listTagThemes,
-  listUnresolvedTags,
   openStore,
   saveExposure,
   saveTagThemes,
-  saveUnresolvedTags,
   saveVideoTags,
 } from '../src/store.js';
 
@@ -189,7 +187,7 @@ test('classifyTheme：themeMap 为 null / 非 Map 时等同于不传', () => {
 });
 
 // ----------------------------------------------------------------------
-// store: tag_theme / tag_unresolved
+// store: tag_theme
 // ----------------------------------------------------------------------
 
 test('saveTagThemes：批量 upsert、大小写归一、脏条目跳过', () => {
@@ -238,65 +236,21 @@ test('saveTagThemes：lexicon 覆盖不了 manual，manual 可以覆盖 lexicon'
   }
 });
 
-test('saveUnresolvedTags：seen_count 累加，first_seen 不动', () => {
+test('countTagThemes：总数、按 source 分组', () => {
   const store = openStore(':memory:');
   try {
-    saveUnresolvedTags(store, [{ tag: 'Foo', count: 2 }, 'bar']);
-    const first = listUnresolvedTags(store);
-    assert.equal(first.length, 2);
-    const foo = first.find((r) => r.tag === 'foo');
-    assert.equal(foo.seenCount, 2);
-    // Plain strings weigh one sighting.
-    assert.equal(first.find((r) => r.tag === 'bar').seenCount, 1);
-
-    saveUnresolvedTags(store, [{ tag: 'foo', count: 5 }, { tag: 'bar' }]);
-    const after = listUnresolvedTags(store);
-    const foo2 = after.find((r) => r.tag === 'foo');
-    assert.equal(foo2.seenCount, 7);
-    assert.equal(foo2.firstSeen, foo.firstSeen);
-    assert.ok(foo2.lastSeen >= foo.firstSeen);
-    assert.equal(after.find((r) => r.tag === 'bar').seenCount, 2);
-    // attempts is left for a future LLM pass and must not move here.
-    assert.equal(foo2.attempts, 0);
-  } finally {
-    closeStore(store);
-  }
-});
-
-test('listUnresolvedTags：按 seen_count 降序，支持 limit', () => {
-  const store = openStore(':memory:');
-  try {
-    saveUnresolvedTags(store, [
-      { tag: 'low', count: 1 },
-      { tag: 'high', count: 40 },
-      { tag: 'mid', count: 7 },
-    ]);
-    assert.deepEqual(listUnresolvedTags(store).map((r) => r.tag), ['high', 'mid', 'low']);
-    assert.deepEqual(listUnresolvedTags(store, 2).map((r) => r.tag), ['high', 'mid']);
-    assert.deepEqual(listUnresolvedTags(store, 0).map((r) => r.tag), ['high', 'mid', 'low']);
-    assert.deepEqual(listUnresolvedTags(store, -1).map((r) => r.tag), ['high', 'mid', 'low']);
-  } finally {
-    closeStore(store);
-  }
-});
-
-test('countTagThemes：总数、按 source 分组、待办数', () => {
-  const store = openStore(':memory:');
-  try {
-    assert.deepEqual(countTagThemes(store), { total: 0, bySource: {}, unresolved: 0 });
+    assert.deepEqual(countTagThemes(store), { total: 0, bySource: {} });
     saveTagThemes(store, [
       { tag: 'a', theme: 'ai' },
       { tag: 'b', theme: 'game', source: 'lexicon' },
       { tag: 'c', theme: 'life', source: 'manual' },
       { tag: 'd', theme: 'food', source: 'llm' },
     ]);
-    saveUnresolvedTags(store, ['x', 'y']);
     const counts = countTagThemes(store);
     assert.equal(counts.total, 4);
     assert.equal(counts.bySource.lexicon, 2);
     assert.equal(counts.bySource.manual, 1);
     assert.equal(counts.bySource.llm, 1);
-    assert.equal(counts.unresolved, 2);
   } finally {
     closeStore(store);
   }
@@ -306,7 +260,7 @@ test('countTagThemes：总数、按 source 分组、待办数', () => {
 // Host: the table is read, and its absence is not fatal
 // ----------------------------------------------------------------------
 
-test('summary：tag_theme 生效；两张新表不存在时退化为纯词根且不崩', async () => {
+test('summary：tag_theme 生效；主题表不存在时退化为纯词根且不崩', async () => {
   const { dir, file } = tempDb();
   try {
     const store = openStore(file);
@@ -339,12 +293,11 @@ test('summary：tag_theme 生效；两张新表不存在时退化为纯词根且
     assert.equal(withTable.login.coverage, 1);
     assert.ok(withTable.login.top.some((t) => t.id === 'life'));
 
-    // An older database without the new tables: empty maps, no throw, pre-table
+    // An older database without the new table: an empty map, no throw, pre-table
     // behaviour for every row.
     const dropped = openStore(file);
     try {
       dropped.db.exec('DROP TABLE tag_theme');
-      dropped.db.exec('DROP TABLE tag_unresolved');
     } finally {
       closeStore(dropped);
     }
