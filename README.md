@@ -1,133 +1,147 @@
 # bili-cocoon
 
-用数据回答一个问题：**B站的推荐流是不是在把我关进一个小圈子？**
+**Is Bilibili's recommendation feed quietly narrowing what you see?**
 
-零依赖（只用 Node 内置模块），采集「首页推荐流 / 观看历史 / 全站排行」，算一个 0–100 的茧房指数，并生成中文报告。
+A zero-dependency Node.js toolkit that measures two different things — and insists on keeping them apart:
 
-> 这是独立包（MIT），不修改上游 `@seiuna/dsh-bilibili-plugin`。阶段 2 可以包成 DSH 插件。
+| | What it is | Where it comes from |
+|---|---|---|
+| **Exposure** | What the algorithm puts in front of you | Home feed (`rcmd`) |
+| **Consumption** | What you actually watch | Watch history |
 
-## 快速开始
+Conflating the two is the most common mistake in filter-bubble tooling. A healthy viewing history says nothing about whether the feed is narrowing. This project reports both sides, plus the gap between them.
+
+> Standalone package (MIT). Ships with a DSH panel plugin under [`plugin/`](plugin/).
+
+[中文说明](README.zh-CN.md)
+
+---
+
+## Why two sides
+
+A single "bubble score" computed from watch history answers *"is my viewing diverse?"* — not *"is the feed feeding me the same thing?"*
+
+Measured on 2026-11-02, same account, same hour:
+
+| Group | AI / LLM content |
+|---|---:|
+| Guest baseline (no account history) | 9.9 % |
+| Logged-in recommendation feed | **32.1 %** |
+| Actual watch history | 16.7 % |
+
+The feed pushes 1.9× more of that topic than the user actually consumes, and 3.2× more than a newcomer would see. A consumption-only index would have reported "healthy" and missed the entire story.
+
+## Quick start
 
 ```bash
-# 1) 采集（游客模式：推荐流是通用流，历史需要登录）
+# 1) Collect a snapshot (guest mode: the feed is generic, history needs login)
 node src/cli.js collect --limit 12
 
-# 2) 看分数
+# 2) Score it
 node src/cli.js score
 
-# 3) 生成报告
+# 3) Render a Markdown report
 node src/cli.js report --out report.md
 ```
 
-登录态（才能真正测「你的」推荐流）：
+Login state (required for *your* personalized feed):
 
 ```bash
-# 方式一：环境变量
+# via environment variable
 $env:BILI_COOKIE = "SESSDATA=...; bili_jct=...; DedeUserID=..."
-# 方式二：文件
+
+# or via a file
 node src/cli.js collect --cookie-file .\cookie.txt
 ```
 
-> cookie 只从环境变量或 `--cookie-file` 读取，代码里没有任何硬编码；`.gitignore` 已排除 `cookie*.txt`、`bilibili-vault.json`、`bilibili-key.json`。
+Cookies are read **only** from `BILI_COOKIE` or `--cookie-file`; nothing is hardcoded.
+`.gitignore` already excludes `cookie*.txt`, `bilibili-vault.json`, `bilibili-key.json`, `data/`, and `*.db`.
 
-## 茧房指数怎么算（v2，有文献依据）
+## How the index is computed
 
-主指标沿用 Fu et al. (2024) 在 **B站** 上的做法：**一级分区上的信息熵**，样本用**观看历史**。
-
-```
-index = 100 × ( 0.55 × (1 − 归一化熵)
-              + 0.25 × HHI(一级分区)
-              + 0.20 × Gini(UP 曝光) )
-```
-
-- **归一化熵** = H / ln(19)，分母固定（19 个一级分区），不随样本里出现了几个分类而变化。
-  这样「28 条均分 3 类」= 0.373，「19 类均分」= 1.0，才分得出宽和窄。
-- **有效分区数** = exp(H)（Hill number, q=1），直观读作「你实际只看了约几个分区」。
-- **HHI** = Σp²，1.0 表示全挤在一个分区。
-- **Gini** 衡量 UP 曝光是否被少数人垄断。
-- 熵会带 **bootstrap 95% 区间**（种子由日期派生，同输入同输出）。
-
-**只作诊断、不进主分的**：
-- 与全站热门的 Jaccard 重合度——抽样量小时结构上必然接近 0，`22 分`那版把它算进 20% 权重是错的。
-- 推荐流与历史的 JSD 散度——越大说明推荐越偏离你实际在看什么。
-
-等级：`<25 开阔 / <50 偏窄 / <70 明显收窄 / ≥70 强茧房`。
-
-### 为什么是「一级分区」
-
-B站历史接口只给二级分区名（「单机游戏」「美食记录」），二级有 150+ 个。
-在同一批内容里，二级分区会把「同属游戏」的几条算成不相关，**严重高估多样性**——
-v1 就是这么把 28 条内容算出 0.98 熵、误判成「开阔」的。
-
-两张表配合使用，缺一不可：
-
-- `src/region-map.json`：二级分区名 → 一级分区（109 条），`tools/build-region-map.mjs` 从排行榜反推 + 手工补漏。
-- `src/tid-region.json`：tid → 二级分区名（33+ 条），`tools/build-tid-map.mjs` 反查生成。
-
-**为什么需要第二张表**：`/x/web-interface/view` 现在不返回 `tname`，只给 `tid`（见「数据口径」）。
-没有它，rcmd 流的分区名会退化成「分区230」这种占位值，`parentOf()` 认不出、整条落进「其他」，
-推荐流的分区分布和 JSD 诊断会一起失真（2026-10-30 ~ 11-02 的数据踩过这个坑，已用
-`tools/fix-region-labels.mjs` 回填）。
-
-### 主题浓度（不进主分）
-
-分区熵回答「你看了多少个分区」，回答不了「这些内容是不是同一个话题」。
-一个人可以在十几个分区之间横跳，内容却全挤在 AI 这一个主题带上——分区熵满分，主题很窄。
+The primary metric follows Fu et al. (2024), who studied Bilibili: **Shannon entropy over top-level categories**, sampled from watch history.
 
 ```
-主主题占比 = 已分类内容里最大主题的占比
-有效主题数 = exp(主题熵)   ← 和有效分区数并列看
+index = 100 × ( 0.55 × (1 − normalized entropy)
+              + 0.25 × HHI(categories)
+              + 0.20 × Gini(uploader exposure) )
 ```
 
-归类规则在 `src/themes.js`，两级信号：
+- **Normalized entropy** = `H / ln(19)` — the denominator is fixed at the 19 top-level categories, so "3 categories evenly split" (0.373) and "19 categories evenly split" (1.0) remain distinguishable.
+- **Effective categories** = `exp(H)` (Hill number, q=1) — reads as "how many categories you effectively watch".
+- **HHI** = `Σp²`; 1.0 means everything sits in one category.
+- **Gini** measures whether exposure concentrates on a few uploaders.
+- Entropy ships with a **bootstrap 95 % interval** (seed derived from the date, so the same input always yields the same output).
 
-1. **标题关键词**（AI/大模型、游戏、科技数码、知识科普、生活日常、美食、动物、搞笑、影视、音乐）
-2. 标题没信号的，用**二级分区**兜底——标题常常是纯口语（「挤爆了」「草莓咪」），
-   只靠关键词覆盖率只有三成；加上分区兜底能到 **94%**
+Diagnostics only — deliberately kept out of the score:
 
-未分类的条目不进分母，覆盖率单独报。这是关键词规则不是 NLP，覆盖率低于 80% 时浓度只看趋势、别当真。
+- Jaccard overlap with the site-wide ranking (structurally near zero at small sample sizes; an earlier version wrongly weighted it at 20 %).
+- Jensen–Shannon divergence between feed and history distributions.
 
-### 方法学参考
+Levels: `<25 open / <50 leaning narrow / <70 clearly narrowing / ≥70 strong bubble`.
 
-- Fu, Che, Li, Yuan & Min (2024). *Heavy users fail to fall into filter bubbles: evidence from a Chinese online video platform.* Frontiers in Physics 12:1423851. — B站、分类熵、200+ 条历史
-- Hill numbers / 有效物种数：<https://en.wikipedia.org/wiki/Diversity_index>
-- Jensen-Shannon 散度用于分布对比（校准诊断）
-- Kitchens, Johnson & Gray — 信息源多样性四维（数量/离散/均衡/种类），本项目只实现了可用数据支撑的部分
+### Why top-level categories
 
-## 数据口径（重要）
+The history endpoint only returns second-level category names ("单机游戏", "美食记录") — and there are 150+ of them. Computing entropy at that granularity counts "two different games" as unrelated content and **massively overstates diversity**. An early version scored 0.98 entropy on 28 items this way and declared the user "open".
 
-- **首页推荐接口的卡片不带分区字段**（实测 key 里没有 `tid`/`tname`/`tags`），所以 `collect` 会按 bvid 补一次 `/x/web-interface/view`，1 条/秒。不想等就加 `--no-enrich`，但那样分区熵不可信（`score` 会打质量警告）。
-- 游客态下 `view` 返回的 `tname` 是空字符串，只有 `tid`。**2026-11 实测：登录态下也一样是空的**（`tname` 和 `tname_v2` 都是空串）。所以分区名走 `src/tid-region.json`，由 `tools/build-tid-map.mjs` 用 `x/web-interface/ranking/region?rid=<tid>&day=3` 返回的 `typename` 反查。
-- **名字不是装饰**：`parentOf()` 靠名字折叠到一级分区，名字缺失（「分区230」）会让整条落进「其他」，推荐流的分布和 JSD 都跟着失真。`collect` 遇到未登记的 tid 会打印提示，跑一次 `build-tid-map` 补上；`score` 里「分区名映射率」低于 1 就说明还有漏网的。
-- 游客态的推荐流是通用流（`personalized=false`），算出来的指数只反映「B站给陌生人的默认口味」，**不能代表你个人**。真实测量必须有 cookie。
-- 观看历史接口需要登录，游客模式会跳过（不致命）。
+Two lookup tables work together:
 
-## 曝光侧 vs 消费侧（重要）
+- `src/region-map.json` — second-level name → top-level category (109 entries), derived from the ranking endpoint plus manual patches.
+- `src/tid-region.json` — `tid` → second-level name (33+ entries), generated by `tools/build-tid-map.mjs`.
 
-这个项目测两件不同的事，别混：
+**Why the second table is required:** `/x/web-interface/view` no longer returns `tname` — only `tid`. Without the mapping, feed items degrade to placeholder names like `分区230`, the category resolver cannot fold them into a top-level bucket, and both the feed distribution and the JSD diagnostic are silently wrong. This actually happened for three days of collected data and was repaired with `tools/fix-region-labels.mjs`.
 
-| | 数据来源 | 回答的问题 | 命令 |
+### Theme concentration (diagnostic)
+
+Category entropy answers "how many categories did you watch?" — not "is this all the same topic?". Someone can browse a dozen categories and still consume nothing but AI content.
+
+```
+top theme share  = largest theme share among classified items
+effective themes = exp(theme entropy)      ← compare against effective categories
+```
+
+Classification lives in `src/themes.js` and uses two signals:
+
+1. **Title keywords** (AI / games / tech / science / daily life / food / animals / comedy / film & anime / music).
+2. **Second-level category fallback** — titles are often pure slang ("挤爆了", "草莓咪") with no topical signal. Keyword-only coverage is around 31 %; adding the category fallback raises it to **94 %**.
+
+Unclassified items are excluded from the denominator and coverage is reported separately. This is keyword matching, not NLP — below 80 % coverage, read the trend, not the absolute number.
+
+### References
+
+- Fu, Che, Li, Yuan & Min (2024). *Heavy users fail to fall into filter bubbles: evidence from a Chinese online video platform.* Frontiers in Physics 12:1423851.
+- Hill numbers / effective number of species: <https://en.wikipedia.org/wiki/Diversity_index>
+- Jensen–Shannon divergence for distribution comparison (calibration diagnostic).
+- Kitchens, Johnson & Gray — four dimensions of source diversity (count / spread / balance / type). Only the dimensions this data can support are implemented.
+
+## Data caveats (read before trusting numbers)
+
+- **Home-feed cards carry no category field** (no `tid` / `tname` / `tags` in the payload). `collect` therefore enriches each item through `/x/web-interface/view` at 1 req/s. `--no-enrich` skips this, but then category entropy is meaningless (`score` warns about it).
+- **`view` returns an empty `tname`** — in guest mode *and* (as of Nov 2026) in logged-in mode. Only `tid` is populated. Category names come from `src/tid-region.json`, resolved via `x/web-interface/ranking/region?rid=<tid>&day=3`.
+- **Names are not cosmetic.** `parentOf()` folds items into top-level categories by name; a missing name drops the item into "other" and distorts both the feed distribution and JSD. `collect` prints a warning for unregistered `tid`s; `build-tid-map` fills them in.
+- **Guest feeds are generic** (`personalized=false`) and reflect what Bilibili shows a stranger — not your personal feed.
+- **Watch history requires login**; guest mode skips it (non-fatal).
+
+## Exposure side vs consumption side
+
+| Side | Source | Answers | Command |
 |---|---|---|---|
-| **消费侧** | `history`（观看历史） | 我实际看了什么 | `collect` / `score` / `report` |
-| **曝光侧** | `rcmd`（首页推荐） | 算法推给我什么 | `exposure` |
+| **Consumption** | `history` | What did I actually watch? | `collect` / `score` / `report` |
+| **Exposure** | `rcmd` | What does the algorithm push at me? | `exposure` |
 
-`score` 的茧房指数**只代表消费侧**。消费结构健康不等于推荐流不窄——
-2026-11-02 实测：同一时刻 Web 游客流 AI 主题占 9.9%，登录流占 32.1%，而观看历史里只占 16.7%。
+`score` measures **consumption only**. A healthy consumption profile does not imply a narrow feed.
 
-### 基线怎么取
+### How the baseline is built
 
-游客身份 + 每轮换新 `buvid3`（`resetBuvid()`），相当于「一台从没来过的新设备」。
-**换不掉的**：IP、城市、运营商、UA。所以这是「没有账号历史」，不是绝对中立。
+A guest identity with a **fresh `buvid3` on every round** (`resetBuvid()`) — effectively "a brand-new device that has never visited". What cannot be changed: IP, city, ISP, user agent. So it is "no account history", not a truly neutral baseline.
 
-### 已知边界（2026-11-02 实测）
+### Known boundaries (measured Nov 2026)
 
-- 抓的是 **Web 端** 推荐流 `x/web-interface/wbi/index/top/feed/rcmd`。
-- App 的 `app.bilibili.com/x/v2/feed/index` 免签名可访问，但**不吃 SESSDATA**：
-  带登录 cookie 和不带，AI 主题占比都是 5.0%，说明它认的是 `access_key`。
-  抓到的 App 流其实是「App 游客流」，代表不了手机上看到的个性化结果。
-- 观看历史是**账号级**的，App 和 Web 共享，所以消费侧数据对两端行为都有效。
+- Only the **web** feed (`x/web-interface/wbi/index/top/feed/rcmd`) is sampled.
+- The App endpoint `app.bilibili.com/x/v2/feed/index` is reachable without a signature but **ignores `SESSDATA`**: AI share stayed at 5.0 % with and without the login cookie, which suggests it authenticates via `access_key`. What we can fetch there is the *App guest* feed, not what a phone user sees.
+- Watch history is **account-level** and shared between App and web, so the consumption side does describe behavior on both clients.
 
-## 命令
+## Commands
 
 ```
 collect  [--db path] [--limit n] [--cookie-file path] [--login] [--no-enrich]
@@ -136,41 +150,60 @@ report   [--db path] [--days n] [--out path]
 exposure [--db path] [--rounds n] [--per-round n] [--no-enrich]
 ```
 
-维护工具（不在日常采集流程里，需要时手动跑）：
+Maintenance tools (run manually, not part of the daily flow):
 
 ```
-node tools/build-tid-map.mjs          # 反查 tid → 分区名，补 src/tid-region.json
+node tools/build-tid-map.mjs          # resolve tid → category name, extend src/tid-region.json
 node tools/build-tid-map.mjs --tid 17,173
-node tools/fix-region-labels.mjs      # 回填库里历史「分区NNN」占位名（加 --dry-run 先看）
-node tools/collect-login.mjs 30 7     # 从 DSH bilibili 插件 vault 解 cookie 直接采集
-node tools/exposure-login.mjs 3 28    # 曝光侧采样：登录流 vs 游客基线流（本机免导 cookie）
-node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分散度/内容重合度）
+node tools/fix-region-labels.mjs      # backfill historical "分区NNN" placeholders (--dry-run first)
+node tools/collect-login.mjs 30 7     # collect using the DSH bilibili plugin's vault cookie
+node tools/exposure-login.mjs 3 28    # exposure sampling: logged-in feed vs guest baseline
+node tools/trend.mjs                  # multi-day trend: index / entropy / uploader spread / overlap
 ```
 
-## 依赖与限制
+## DSH panel plugin
 
-- Node ≥ 22（用到内置 `node:sqlite`），无 npm 依赖。
-- 限速：所有真实请求串行，间隔 ≥ 1000ms，避免触发风控。
-- 测试：`node test/metrics.test.js`（本机沙箱里 `node --test` 会因为 spawn 权限报 EPERM，改用直接执行）。
-
-## 文件结构
+`plugin/` is a DeepSeek Harness client plugin. It injects a pill into the conversation header (`conversation.session.header.actions`, `order: 13`) right next to the bilibili plugin's own pill, and expands into a three-column comparison:
 
 ```
-src/wbi.js      WBI 签名（mixin key + w_rid）、限速队列、buvid3
-src/api.js      推荐流 / 历史 / 排行 / 视频详情，统一成 Item
-src/metrics.js  纯函数：熵、HHI、Gini、Jaccard、cocoonScore
-src/themes.js   主题归类规则（标题关键词 + 二级分区兜底）+ classifyTheme
-src/exposure.js 曝光侧采样与汇总（登录 vs 游客基线、主题放大倍数）
-src/report.js   中文 markdown 报告
-src/store.js    SQLite 快照存储
-src/cli.js      命令行入口
-src/tid-region.json   tid → 二级分区名（build-tid-map 生成，别手改）
-src/region-map.json   二级分区名 → 一级分区
-tools/          build-tid-map / fix-region-labels / build-region-map / collect-login
+theme           newcomer   fed to you   you watch
+AI / LLM          11.3%  →   26.8%    ←  17.7%    2.36×
 ```
 
-## 后续
+The host half only reads `cocoon.db` and serves `GET /dsh-bilibili-cocoon/summary`; it never writes, never polls, and returns `{ ok: false, error }` instead of throwing — a failing plugin takes the whole GUI down with it.
 
-- [ ] 包成 DSH 插件：`bilibili_cocoon_collect` / `bilibili_cocoon_score` 两个工具
-- [ ] 连续多天采样画趋势（熵随时间下降 = 茧房加剧）
-- [ ] 标签维度（`/x/tag/archive/tags` 可用）做主题聚类
+It is a **separate package on purpose**: `@seiuna/dsh-bilibili-plugin` is shipped as a prebuilt bundle, so adding features there would mean maintaining a fork. Slots are global and ordered, so an independent plugin lands visually next to it without touching upstream code.
+
+## Requirements
+
+- Node ≥ 22 (uses built-in `node:sqlite`); no npm dependencies.
+- All real requests are serialized with a ≥ 1000 ms gap to stay clear of rate limiting.
+- Tests: `node test/metrics.test.js` (19 assertions).
+
+## Repository layout
+
+```
+src/wbi.js              WBI signing (mixin key + w_rid), rate-limited queue, buvid3
+src/api.js              feed / history / ranking / video detail, normalized into Item
+src/metrics.js          pure functions: entropy, HHI, Gini, Jaccard, cocoonScore
+src/themes.js           theme classification (title keywords + category fallback)
+src/exposure.js         exposure sampling and aggregation (login vs guest, amplification)
+src/report.js           Markdown report renderer
+src/store.js            SQLite snapshot + exposure storage
+src/cli.js              command-line entry point
+src/tid-region.json     tid → second-level category (generated; do not edit by hand)
+src/region-map.json     second-level category → top-level category
+plugin/                 DSH client plugin (host + browser halves)
+tools/                  mapping generators, backfill, trend, login-aware collectors
+```
+
+## Roadmap
+
+- [ ] Attribute amplified themes down to specific uploaders and videos (click-through)
+- [ ] Weekly amplification trend line, not just the latest snapshot
+- [ ] Tag-based clustering (`/x/tag/archive/tags` is available) to replace keyword matching
+- [ ] Register agent-facing tools (`cocoon_report`) so the panel and the agent share one code path
+
+## License
+
+MIT
