@@ -15,6 +15,7 @@ const RCMD_URL = 'https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rc
 const HISTORY_URL = 'https://api.bilibili.com/x/web-interface/history/cursor';
 const RANKING_URL = 'https://api.bilibili.com/x/web-interface/ranking/v2';
 const VIEW_URL = 'https://api.bilibili.com/x/web-interface/view';
+const TAGS_URL = 'https://api.bilibili.com/x/tag/archive/tags';
 
 const PERSONALIZED_REASON_RE = /相关推荐|热门|关注/;
 
@@ -311,6 +312,115 @@ export async function enrichItems(items, { cookie = '', fetchImpl = undefined, m
     }
   }
   return { items: out, enriched, failed, unknownTids: [...unknownTids] };
+}
+
+// ----------------------------------------------------------------------
+// Video tags
+//
+// x/tag/archive/tags is the only source of a video's real tag list (the feed
+// and history payloads only carry an empty `tags` field). It needs no cookie
+// and no WBI signature, but it answers HTTP 200 with a non-zero `code` for
+// malformed ids, so the body code is the only reliable failure signal.
+// ----------------------------------------------------------------------
+
+// Accepts a bvid string ("BV..."), an "av123" string (the store keeps those
+// for videos without a bvid), a bare numeric aid, or { bvid } / { aid }.
+function normalizeTagRef(ref) {
+  if (typeof ref === 'number') {
+    return Number.isSafeInteger(ref) && ref > 0 ? { aid: String(ref) } : null;
+  }
+  if (typeof ref === 'string') {
+    const s = ref.trim();
+    if (!s) return null;
+    const av = /^av(\d+)$/i.exec(s);
+    if (av) return /^[1-9]\d*$/.test(av[1]) ? { aid: av[1] } : null;
+    if (/^BV/i.test(s)) return s.length > 2 ? { bvid: s } : null;
+    if (/^[1-9]\d*$/.test(s)) return { aid: s };
+    return null;
+  }
+  if (ref && typeof ref === 'object') {
+    const bvid = strOrNull(ref.bvid);
+    if (bvid) return normalizeTagRef(bvid);
+    const aid = ref.aid;
+    if (aid === null || aid === undefined || aid === '') return null;
+    return normalizeTagRef(typeof aid === 'number' ? aid : String(aid).trim());
+  }
+  return null;
+}
+
+// The endpoint sometimes repeats a tag or attaches a tag_id=0 placeholder;
+// the order of the returned array also jitters between requests. Dedupe by
+// name, drop tag_id=0, then sort by name so identical input always stores
+// identically. tagIds stay aligned with tags through the sort.
+function tagPairsFrom(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const pairs = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const id = numOrNull(item.tag_id);
+    if (id === 0) continue;
+    const name = strOrNull(item.tag_name);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    pairs.push({ name, id });
+  }
+  pairs.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return pairs;
+}
+
+function describeRef(ref) {
+  if (typeof ref === 'string' || typeof ref === 'number') return JSON.stringify(ref);
+  if (ref && typeof ref === 'object') {
+    const bvid = strOrNull(ref.bvid);
+    if (bvid) return JSON.stringify(bvid);
+    if (ref.aid !== undefined && ref.aid !== null) return JSON.stringify(ref.aid);
+  }
+  return String(ref);
+}
+
+export async function fetchVideoTags(ref, { cookie = '', fetchImpl = undefined } = {}) {
+  const query = normalizeTagRef(ref);
+  if (!query) {
+    return {
+      ok: false,
+      error: `无效的视频引用：${describeRef(ref)}（需要 bvid / av号 / { bvid } / { aid }）`,
+      network: false,
+    };
+  }
+
+  const qs = query.bvid
+    ? `bvid=${encodeURIComponent(query.bvid)}`
+    : `aid=${encodeURIComponent(query.aid)}`;
+  const url = `${TAGS_URL}?${qs}`;
+
+  let json;
+  try {
+    json = await requestJson(url, { cookie, fetchImpl });
+  } catch (err) {
+    // Transport-level failure (DNS, timeout, 412, non-JSON). Callers use this
+    // flag to tell a network outage apart from a per-video business error.
+    return {
+      ok: false,
+      error: `标签请求失败：${err?.message ?? err}`,
+      code: typeof err?.code === 'number' ? err.code : undefined,
+      network: true,
+    };
+  }
+
+  const code = json?.code;
+  if (code !== 0) {
+    const numeric = Number(code);
+    return {
+      ok: false,
+      error: `B站返回 code=${code} msg=${json?.message ?? ''}`,
+      code: Number.isFinite(numeric) ? numeric : undefined,
+      network: false,
+    };
+  }
+
+  const pairs = tagPairsFrom(json?.data);
+  return { ok: true, tags: pairs.map((p) => p.name), tagIds: pairs.map((p) => p.id) };
 }
 
 export { getBuvid3, DEFAULT_UA, HttpError };
