@@ -1,14 +1,4 @@
-// tools/exposure-login.mjs
-// 从 DSH bilibili 插件 vault 解出登录 cookie，跑一次曝光侧采样（登录流 vs 游客流）。
-//
-// 与 `node src/cli.js exposure` 的区别：这条不需要你手动导出 cookie，适合本机每天跑。
-//
-// 用法：
-//   node tools/exposure-login.mjs                  # 3 轮 × 28 条（含补分区，约 3~4 分钟）
-//   node tools/exposure-login.mjs 3 28
-//   node tools/exposure-login.mjs 2 20 --no-enrich
-//
-// 安全约定：cookie 只在进程内存里用，不打印、不写文件。
+// Runs exposure sampling using the vault cookie (no manual export).
 
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';

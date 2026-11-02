@@ -1,13 +1,4 @@
-// tools/build-region-map.mjs
-// 重建 src/region-map.json：把「二级分区名 → 一级分区名」的映射从排行榜接口反推出来。
-//
-// 原理：ranking/v2?rid=<一级分区 id> 返回的条目里带 tname（二级分区名），
-// 于是「该 rid 下出现的所有 tname」就属于这个一级分区。
-//
-// 注意：番剧(13)/综艺(71)/国创(167)/资讯(202) 这几个 rid 排行榜会返回 -400，
-// 映射表里没有它们，运行时落到「其他」。
-//
-// 用法：node tools/build-region-map.mjs
+// Derives the second-level to top-level category mapping from the ranking endpoint.
 
 import fs from 'node:fs/promises';
 import path from 'node:path';

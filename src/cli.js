@@ -1,17 +1,6 @@
 #!/usr/bin/env node
-/**
- * bili-cocoon · 命令行入口（零依赖，手工解析 process.argv）
- *
- *   node src/cli.js collect [--db data/cocoon.db] [--limit 30] [--cookie-file path]
- *   node src/cli.js score   [--db data/cocoon.db] [--days 7] [--json]
- *   node src/cli.js report  [--db data/cocoon.db] [--days 7] [--out report.md]
- *
- * 约定：
- * - api / metrics / report / store 都在命令函数内部用动态 import 加载，
- *   这样 `--help` 不依赖任何队友模块，缺文件也能正常打印用法。
- * - cookie 只来自 BILI_COOKIE 或 --cookie-file，绝不硬编码。
- * - collect 严格串行调用三个 fetch（api.js 自己还有 QPS 队列，禁止 Promise.all）。
- */
+
+// Command-line entry point: collect / score / report / exposure.
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -19,8 +8,6 @@ import { pathToFileURL } from 'node:url';
 
 const DEFAULT_DB_PATH = 'data/cocoon.db';
 const DEFAULT_REPORT_PATH = 'report.md';
-
-// ---------------------------------------------------------------- 用法 / 错误
 
 const USAGE = `bili-cocoon —— 度量 B 站推荐流的信息茧房指数（零依赖）
 
@@ -83,15 +70,9 @@ function usageError(message, hint = '') {
   return new CliError(message, 1, `${hint ? hint + '\n' : ''}查看用法：node src/cli.js --help`);
 }
 
-// ---------------------------------------------------------------- 参数解析
-
 const VALUE_FLAGS = new Set(['db', 'limit', 'days', 'out', 'cookie-file']);
 const BOOL_FLAGS = new Set(['json', 'login', 'help', 'no-enrich']);
 
-/**
- * 手工解析 argv（不引依赖）。第一个非 flag 词是子命令，其余是位置参数。
- * @returns {{command:string, positional:string[], flags:Record<string,string|true>, help:boolean}}
- */
 function parseArgs(argv) {
   const parsed = { command: '', positional: [], flags: {}, help: false };
 
@@ -124,7 +105,6 @@ function parseArgs(argv) {
       else {
         i += 1;
         value = argv[i];
-        // `--db --limit 5` 这种漏写取值的情况，别把下一个 flag 当成路径吞掉
         if (value !== undefined && String(value).startsWith('--')) {
           throw usageError(`参数 --${name} 需要一个值（后面紧跟的是 ${value}）`);
         }
@@ -156,8 +136,6 @@ function intFlag(flags, name, fallback, min, max) {
   return n;
 }
 
-// ---------------------------------------------------------------- 通用小工具
-
 async function importModule(spec, label) {
   try {
     return await import(spec);
@@ -188,7 +166,6 @@ function resolveCookie(flags) {
     try {
       let text = readFileSync(abs, 'utf8');
       text = text.trim();
-      // 容忍 "Cookie: a=b; c=d" 这种从浏览器/插件复制出来的整行
       text = text.replace(/^cookie\s*:\s*/i, '');
       text = text.replace(/\r?\n+/g, ' ').trim();
       fileCookie = text;
@@ -203,7 +180,6 @@ function resolveCookie(flags) {
   return { cookie: '', origin: '' };
 }
 
-/** 上游三个 fetch 统一返回 {items, personalized}；这里做点防御式兼容 */
 function normalizeFetchResult(raw, source) {
   if (Array.isArray(raw)) return { items: raw, personalized: null };
   if (raw && typeof raw === 'object') {
@@ -234,9 +210,6 @@ function personalizedLabel(value) {
   return '未知';
 }
 
-// ---------------------------------------------------------------- 表格渲染
-
-/** 中文字符占两格，手工算显示宽度才能对齐 */
 function displayWidth(text) {
   let width = 0;
   for (const ch of String(text)) {
@@ -270,12 +243,10 @@ function formatNumber(value, digits = 3) {
 function formatPercent(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '-';
-  // 兼容 0..1 与 0..100 两种口径
   const pct = Math.abs(n) <= 1 ? n * 100 : n;
   return `${pct.toFixed(1)}%`;
 }
 
-/** 两列表格：左标签右值，按显示宽度对齐 */
 function printTable(title, rows) {
   if (rows.length === 0) return;
   const labelWidth = Math.max(...rows.map((r) => displayWidth(r[0])));
@@ -296,12 +267,9 @@ function jsonReplacer(_key, value) {
   return value;
 }
 
-// ---------------------------------------------------------------- 命令：collect
-
 async function cmdCollect(flags) {
   const dbPath = flags.db || DEFAULT_DB_PATH;
   const limit = intFlag(flags, 'limit', 30, 1, 200);
-  // 历史要翻页：分类熵在 200+ 条样本上才稳定（Frontiers 2024 的做法）
   const historyPages = intFlag(flags, 'history-pages', 7, 1, 40);
   const { cookie, origin } = resolveCookie(flags);
 
@@ -347,7 +315,6 @@ async function cmdCollect(flags) {
   const labelWidth = Math.max(...steps.map((s) => displayWidth(s.label)));
   let failed = 0;
 
-  // 严格串行：每个来源 await 完再下一个，避免并发把 api.js 的 QPS 队列顶掉
   for (const step of steps) {
     const fn = api[`fetch${step.key[0].toUpperCase()}${step.key.slice(1)}`];
     if (typeof fn !== 'function') {
@@ -370,8 +337,6 @@ async function cmdCollect(flags) {
     }
   }
 
-  // 只要有数据就落库，即使部分来源失败（避免白跑一次）
-  // rcmd 卡片不带分区字段，按 bvid 补详情（1 条/秒），否则分区熵全是「未知」= 假数据
   if (collected.rcmd.length > 0 && !flags['no-enrich'] && typeof api.enrichItems === 'function') {
     const need = collected.rcmd.filter((it) => !it.tname).length;
     if (need > 0) {
@@ -387,7 +352,6 @@ async function cmdCollect(flags) {
           console.log('    跑 node tools/build-tid-map.mjs 补进 src/tid-region.json（否则它们会落进「其他」）');
         }
       } catch (err) {
-        // 补分区失败不该丢掉已经采到的整批数据，先按原样落库，score 会提示质量不足
         console.warn(`  警告: 补分区失败，先用未补齐的数据落库：${describeError(err)}`);
       }
     }
@@ -426,8 +390,6 @@ async function cmdCollect(flags) {
   }
 }
 
-// ---------------------------------------------------------------- 命令：score / report 共用的取数与计算
-
 async function computeScore(flags) {
   const dbPath = flags.db || DEFAULT_DB_PATH;
   const days = intFlag(flags, 'days', 7, 1, 3650);
@@ -450,8 +412,6 @@ async function computeScore(flags) {
   }
 
   const latest = snapshot.latest;
-  // 单页推荐流的熵天生很高（首页本来就是各分区混着推），所以 --days 必须真的跨天累计：
-  // 把窗口内所有天的 rcmd 按 bvid 去重后合并，才等于「这段时间你被喂了什么」。
   const feedByBvid = new Map();
   for (const d of snapshot.dates) {
     for (const it of snapshot.byDate[d]?.rcmd ?? []) {
@@ -467,7 +427,6 @@ async function computeScore(flags) {
     );
   }
 
-  // 日期升序排列（snapshot.dates 是降序）后找“同一天或最近一次”有数据的来源
   const pickFrom = (source) => {
     const same = snapshot.byDate[latest]?.[source] ?? [];
     if (same.length) return { source, items: same, date: latest };
@@ -493,7 +452,6 @@ async function computeScore(flags) {
 
   let result;
   try {
-    // 日期优先用快照日期（metrics.js 会用 options.date 覆盖“今天”）
     result = await metrics.cocoonScore(
       { feed, history: history.items, ranking: ranking.items, date: latest },
       { date: latest },
@@ -513,9 +471,7 @@ async function computeScore(flags) {
       days,
       date: latest,
       feed,
-      // 数据质量：分区字段缺失时，熵/集中度/重合度都不可信（rcmd 原始卡片不带 tname）
       quality: {
-        // 「分区<tid>」占位也算缺失：它虽然非空，但 parentOf() 认不出，整条会落进「其他」
         missingCategory: feed.filter((it) => !it.tname || it.tname === '未知' || /^分区\d+$/.test(it.tname)).length,
       },
       counts: {
@@ -541,7 +497,6 @@ function printScore(result, context) {
   );
   console.log('');
 
-  // 数据质量提示：分区信息缺失时，熵和集中度是假数据（rcmd 卡片本身不带 tname）
   const missing = Number(context?.quality?.missingCategory ?? 0);
   const total = Number(result.sampleSize ?? 0);
   if (total > 0 && missing / total > 0.5) {
@@ -559,7 +514,6 @@ function printScore(result, context) {
     ['UP 重复率', formatNumber(result.uploaderRepeat, 3)],
   ]);
 
-  // 诊断项：不进主分，只用于判断「推荐流是否只在喂熟悉的东西」
   printTable('诊断（不进主分）', [
     ['与全站热门重合度', formatNumber(result.overlapWithRanking, 3), '结构上接近 0，别当结论'],
     ['推荐vs历史 JSD', formatNumber(result.calibration, 3), '越大说明推荐越偏离你实际在看什么'],
@@ -567,17 +521,12 @@ function printScore(result, context) {
     ['分区名映射率(推荐)', formatNumber(result.quality?.feedMappedRatio, 3), '推荐流最容易坏：view 不给 tname'],
   ]);
 
-  // 口径提示：三个子项方向不一样，diversity 越高越健康，另外两个越高越封闭
-  // 注：原来的 echochamber 子项已删除——它算的是 jaccard(feed, ranking)×100，
-  // 两个不同抽样池的 bvid 几乎不可能重叠，恒等于 100，没有任何信息量。
   printTable('子项打分（0..100）', [
     ['多样性 diversity', formatNumber(subs.diversity, 1), '越高越健康'],
     ['集中度 concentration', formatNumber(subs.concentration, 1), '越高越封闭'],
     ['重复度 repetition', formatNumber(subs.repetition, 1), '越高越封闭'],
   ]);
 
-  // 主题浓度：分区是「平台怎么归类」，主题是「内容讲什么」，两者可以背离——
-  // 比如在十几个分区之间横跳，内容却全挤在 AI 这一个主题上。
   const th = result.themes;
   if (th && th.effective > 0) {
     console.log('');
@@ -605,8 +554,6 @@ function printScore(result, context) {
   }
 }
 
-// ---------------------------------------------------------------- 命令：score
-
 async function cmdScore(flags) {
   const { result, context } = await computeScore(flags);
   if (flags.json) {
@@ -615,8 +562,6 @@ async function cmdScore(flags) {
   }
   printScore(result, context);
 }
-
-// ---------------------------------------------------------------- 命令：report
 
 async function cmdReport(flags) {
   const { result, context } = await computeScore(flags);
@@ -630,7 +575,6 @@ async function cmdReport(flags) {
     days: context.days,
     date: result.date ?? context.date,
     counts: context.counts,
-    // report.js 用 opts.items/feed 现算 TOP5 分区/UP（result 自带 topXxx 时优先用 result）
     feed: context.feed,
     items: context.feed,
   });
@@ -654,8 +598,6 @@ async function cmdReport(flags) {
   console.log('');
   process.stdout.write(text);
 }
-
-// ---------------------------------------------------------------- 入口
 
 async function main(argv = process.argv.slice(2)) {
   let parsed;
@@ -686,14 +628,6 @@ async function main(argv = process.argv.slice(2)) {
   }
 }
 
-// ---------------------------------------------------------------- 命令：exposure
-
-/**
- * 曝光侧采样：同一时段交替抓「登录流」和「游客流（每轮换 buvid3）」。
- *
- * 回答的是「算法把什么推给你」——与 score 的消费侧（你看过什么）是两个问题。
- * 基线用游客身份的代价：IP / 城市换不掉，只是「没有账号历史」。
- */
 async function cmdExposure(flags) {
   const { cookie } = resolveCookie(flags);
   const dbPath = flags.db ?? DEFAULT_DB_PATH;
@@ -775,12 +709,10 @@ function reportError(err) {
   return 1;
 }
 
-/** 只有被 `node src/cli.js` 直接执行时才跑 main()，被 import 时什么都不做 */
 function isMainModule() {
   const entry = process.argv[1];
   if (!entry) return false;
   try {
-    // Windows 上 process.argv[1] 是 C:\...\cli.js，必须转成 file:///C:/... 才能和 import.meta.url 比
     return import.meta.url === pathToFileURL(resolve(entry)).href;
   } catch {
     return false;

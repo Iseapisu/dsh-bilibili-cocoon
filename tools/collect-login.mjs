@@ -1,8 +1,4 @@
-// tools/collect-login.mjs
-// 从 DSH 的 bilibili 插件 vault 解密出登录 cookie，直接跑一次采集。
-// 安全约定：cookie 只在进程内存里用，不打印、不写文件。
-//
-// 用法：node tools/collect-login.mjs [limit]
+// Collects a snapshot using the DSH bilibili plugin's vault cookie.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';

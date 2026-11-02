@@ -1,3 +1,5 @@
+// Unit tests for metrics, theme classification and report rendering.
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -66,9 +68,7 @@ test('normalizedEntropy：默认除以 ln(19)，传 k 时可退回旧口径', ()
   assert.equal(normalizedEntropy([]), 0);
   assert.equal(normalizedEntropy([9]), 0);
   assert.equal(normalizedEntropy([9, 0, 0]), 0);
-  // 19 个分类均分 = 满分
   closeTo(normalizedEntropy(Array(MAX_CATEGORIES).fill(1)), 1, 1e-12);
-  // 3 个分类均分只有 ln3/ln19 ≈ 0.373 —— 这正是修掉 v1「3 类=满分」的关键
   closeTo(normalizedEntropy([2, 2, 2]), Math.log(3) / Math.log(19), 1e-12);
   closeTo(normalizedEntropy([2, 2, 2], 3), 1, 1e-12);
   closeTo(normalizedEntropy([8, 2], 2), 0.7219280948873623, 1e-12);
@@ -122,10 +122,10 @@ test('jsDivergence：同分布为 0，完全不同为 1', () => {
 
 test('categoryCounts：二级分区折叠到一级，不认识的归「其他」', () => {
   const items = [
-    makeItem(1, { tname: '单机游戏' }),   // 游戏
-    makeItem(2, { tname: '手机游戏' }),   // 游戏
-    makeItem(3, { tname: '美食记录' }),   // 美食
-    makeItem(4, { tname: '随便什么' }),   // 其他
+    makeItem(1, { tname: '单机游戏' }),
+    makeItem(2, { tname: '手机游戏' }),
+    makeItem(3, { tname: '美食记录' }),
+    makeItem(4, { tname: '随便什么' }),
   ];
   const counts = categoryCounts(items);
   assert.equal(counts.get('游戏'), 2);
@@ -175,19 +175,16 @@ test('cocoonScore：空输入不产出假结论', () => {
 });
 
 test('cocoonScore：宽度单调 —— 开阔 < 偏窄 < 强茧房', () => {
-  // 开阔：12 个不同一级分区、12 个不同 UP、与排行完全重合
   const openFeed = PARENTS.map((tname, i) => makeItem(i, { bvid: `BVopen${i}`, tname, upName: `UP${i}` }));
   const open = cocoonScore({ feed: openFeed, history: [], ranking: openFeed, date: '2026-10-30' });
   assert.equal(open.level, '开阔');
 
-  // 偏窄：2 个分区 6/6
   const narrowFeed = Array.from({ length: 12 }, (_, i) =>
     makeItem(i, { bvid: `BVnarrow${i}`, tname: i < 6 ? '游戏' : '知识', upName: `UP${i}` }),
   );
   const narrow = cocoonScore({ feed: narrowFeed, history: [], date: '2026-10-30' });
   assert.ok(narrow.index > open.index, `narrow=${narrow.index} 应 > open=${open.index}`);
 
-  // 强茧房：全在一个分区、同一个 UP
   const cocoonFeed = Array.from({ length: 12 }, (_, i) =>
     makeItem(i, { bvid: `BVcocoon${i}`, tname: '游戏', upName: '同一个UP' }),
   );
@@ -195,7 +192,6 @@ test('cocoonScore：宽度单调 —— 开阔 < 偏窄 < 强茧房', () => {
   assert.equal(cocoon.level, '强茧房');
   assert.ok(cocoon.index > narrow.index);
 
-  // 宽度指标本身要能区分「3 类均分」和「19 类均分」——v1 做不到
   assert.ok(cocoon.entropyNorm <= open.entropyNorm);
 });
 
@@ -234,7 +230,6 @@ test('fixtures：高集中 feed 被判为强茧房，且各口径自洽', () => 
   }
 
   const result = cocoonScore({ feed, history: [], ranking, date: '2026-10-30' });
-  // 12 条里 10 条是游戏 → 一级分区高度集中
   assert.equal(categoryCounts(feed).get('游戏'), 10);
   assert.ok(result.entropyNorm < 0.3, `entropyNorm=${result.entropyNorm}`);
   assert.ok(result.hhi > 0.5, `hhi=${result.hhi}`);
@@ -265,13 +260,10 @@ test('renderReport：含结论、指标、建议；小样本给出提示', () =>
 test('classifyTheme：标题关键词优先，标题没信号时用二级分区兜底', () => {
   assert.equal(classifyTheme('DeepSeek V5 要来了，大模型又要更新'), 'ai');
   assert.equal(classifyTheme('全网最全的 GPT 提示词教程'), 'ai');
-  // 标题是纯口语、没有任何主题词，只能靠分区
   assert.equal(classifyTheme('挤爆了', '日常'), 'life');
   assert.equal(classifyTheme('红烧肉', '美食记录'), 'food');
-  // 两边都没信号 → 未分类，不许硬猜
   assert.equal(classifyTheme('挤爆了'), UNCLASSIFIED);
   assert.equal(classifyTheme(''), UNCLASSIFIED);
-  // 「AI」的英文边界：词中间出现不算
   assert.equal(classifyTheme('RAID 阵列怎么配', '数码'), 'tech');
 });
 
@@ -288,6 +280,5 @@ test('cocoonScore：主题浓度只统计已分类条目，未分类不进分母
   closeTo(result.themes.coverage, 0.75, 1e-9);
   assert.equal(result.themes.topName, 'AI / 大模型');
   closeTo(result.themes.topShare, 2 / 3, 1e-3);
-  // 主题熵应当在「两类均分」和「单类」之间
   assert.ok(result.themes.effective > 1 && result.themes.effective < 2.5, `effective=${result.themes.effective}`);
 });

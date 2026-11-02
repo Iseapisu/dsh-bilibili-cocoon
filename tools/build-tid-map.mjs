@@ -1,20 +1,4 @@
-// tools/build-tid-map.mjs
-// 生成 src/tid-region.json：二级分区 tid → 分区名。
-//
-// 为什么需要它：/x/web-interface/view 现在（2026-11 实测）无论登录与否都返回
-// tname=""、tname_v2=""，只给 tid。rcmd 流本身又不带分区字段，于是采集时只能拿
-// 到 tid，靠 api.js 里那 29 条硬编码兜底，剩下的全变成「分区230」这种占位名，
-// parentOf() 认不出、统统落进「其他」，推荐流的分区分布直接失真。
-//
-// 反查通道：x/web-interface/ranking/region?rid=<tid>&day=3 返回的 typename
-// 就是该 tid 的分区名（实测 33/33 命中）。旧接口，不需要 WBI 签名。
-//
-// 用法：
-//   node tools/build-tid-map.mjs                 # 扫 data/cocoon.db 里所有「分区NNN」的 tid
-//   node tools/build-tid-map.mjs --tid 17,173    # 补指定 tid
-//   node tools/build-tid-map.mjs --tid all       # 扫库里的全部 tid（含已知的，用于校验）
-//
-// 设计原则：只增不删、失败不写。某个 tid 查不到就跳过并警告，绝不用猜测的名字覆盖。
+// Resolves tid to category names through ranking/region and extends src/tid-region.json.
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -28,12 +12,11 @@ const REGION_MAP_PATH = path.join(ROOT, 'src', 'region-map.json');
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-const DELAY_MS = 1100; // ranking/region 比主接口更容易触发风控，慢一点
+const DELAY_MS = 1100;
 const RETRIES = 2;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** 反查单个 tid 的分区名。名字冲突或空结果都视为失败（不猜）。 */
 async function fetchTypeName(tid) {
   const url = `https://api.bilibili.com/x/web-interface/ranking/region?rid=${tid}&day=3`;
   let lastErr;
@@ -57,7 +40,6 @@ async function fetchTypeName(tid) {
   throw lastErr;
 }
 
-/** 从命令行 / 数据库收集待查询的 tid。 */
 function collectTids(argv) {
   const idx = argv.indexOf('--tid');
   if (idx !== -1) {
@@ -137,7 +119,6 @@ for (const tid of tids) {
   await sleep(DELAY_MS);
 }
 
-// 稳定排序输出，便于 diff
 const sorted = Object.fromEntries(Object.keys(next).sort((a, b) => Number(a) - Number(b)).map((k) => [k, next[k]]));
 await fs.writeFile(OUT_PATH, `${JSON.stringify(sorted, null, 2)}\n`, 'utf8');
 

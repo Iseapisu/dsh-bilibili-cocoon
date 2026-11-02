@@ -1,15 +1,6 @@
-/*
- * dsh-bilibili-cocoon — 客户端半边。
- *
- * 挂载方式与 dsh-local-engines 一致：执行本文件只登记 factory，真正的注册
- * 发生在模块被 materialize 时，随这个插件的 client fiber 一起销毁。
- *
- * 数据从 `GET /dsh-bilibili-cocoon/summary` 取（Host 半边读 SQLite 后算好的摘要）。
- * 桌面端会把页面请求转发给 Host，相对 fetch 同源，不需要 CORS 处理。
- *
- * 失败姿态：拉不到数据就显示「茧房 ?」，面板里给出原因。绝不因为后端没数据
- * 让这个 pill 阻塞或抛错——它挂在会话头部，崩了很难看。
- */
+// Client half: a pill in the conversation header that expands into the
+// newcomer / fed-to-you / you-watch comparison.
+
 window.__ModuleLoader__.load({
   id: 'dsh-bilibili-cocoon',
   factory: function (require) {
@@ -150,13 +141,11 @@ window.__ModuleLoader__.load({
       var error = errState[0]
       var setError = errState[1]
 
-      // attempt 是重试计数：只靠 phase 会让「失败 → 重跑 effect → 再失败」变成死循环
       var attemptState = React.useState(0)
       var attempt = attemptState[0]
       var setAttempt = attemptState[1]
 
       React.useEffect(function () {
-        // 挂载就拉一次：pill 要常显倍率，不能等用户点开
         var alive = true
         setPhase('loading')
         fetch(ROUTE, { credentials: 'same-origin' })

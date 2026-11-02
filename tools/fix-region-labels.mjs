@@ -1,13 +1,4 @@
-// tools/fix-region-labels.mjs
-// 数据迁移：把 snapshot 表里历史遗留的「分区<tid>」占位名，按 src/tid-region.json 改成真实分区名。
-//
-// 为什么需要：2026-10-30 ~ 11-02 采集的 rcmd 数据，因为 /view 不返回 tname，
-// 全都落成了「分区173」这种占位值，parentOf() 认不出 → 全进「其他」。
-// 补了映射表之后，旧快照也要回填，否则历史趋势对比仍然是错的。
-//
-// 用法：
-//   node tools/fix-region-labels.mjs --dry-run   # 只看会改多少行
-//   node tools/fix-region-labels.mjs             # 实际写库（幂等，可重复执行）
+// Backfills historical '分区NNN' placeholder names in the snapshot table.
 
 import fs from 'node:fs/promises';
 import path from 'node:path';

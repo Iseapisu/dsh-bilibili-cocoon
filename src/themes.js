@@ -1,21 +1,6 @@
-// src/themes.js
-// 主题归类：把一条内容归到一个粗粒度主题上，用来度量「主题浓度」。
-//
-// 为什么需要：分区熵只回答「你看了多少个分区」。一个人可以在 19 个一级分区里横跳，
-// 内容却全挤在「AI / 大模型」这一个主题带上——分区熵满分，主题浓度很高。
-// 2026-11-02 的数据就是这样：熵 0.726（开阔），AI 相关标题占 16.7%。
-//
-// 判定顺序（先强信号，后弱信号）：
-//   1. 标题关键词——命中词最多的主题胜出，平票取 THEMES 里靠前的
-//   2. 二级分区兜底——标题常常是纯口语（「挤爆了」「草莓咪」），没有主题信息；
-//      这时用 tname 查主题的 regions 列表。二级分区比一级精确得多，不会把
-//      「知识区里的编程教程」错算成 AI
-//   3. 都没有 → unclassified，覆盖率单独报告，不混进浓度
-//
-// 英文词的边界：中文环境里 \b 不可靠（「AI早报」里 AI 后面是中文），
-// 所以用「前后不是 ASCII 字母」来界定，见 notLetter。
+// Theme classification: title keywords first, second-level category fallback.
+// Feeds the theme-concentration diagnostic, which is separate from category entropy.
 
-/** 「前后不是英文字母」——给 AI/GPT 这类短词用的边界，避免匹配到 RAID / Mail。 */
 const notLetter = (w) => new RegExp(`(?<![A-Za-z])${w}(?![A-Za-z])`, 'i');
 
 export const THEMES = [
@@ -29,8 +14,6 @@ export const THEMES = [
       'Claude', 'Gemini', 'Copilot', 'Qwen', '千问', 'FLUX', 'MOSS', 'ChatGLM',
       'Sora', 'token', 'prompt', 'Agent', 'LLM', 'GPT', notLetter('AI'),
     ],
-    // 这些二级分区里的内容几乎必然是 AI 相关（但 AI 内容也会出现在其他分区，
-    // 所以只做兜底、不做唯一来源）
     regions: [],
   },
   {
@@ -137,18 +120,11 @@ export const THEME_NAMES = new Map([
   ...THEMES.map((t) => [t.id, t.name]),
 ]);
 
-// 二级分区名 → 主题 id 的倒排表
 const REGION_TO_THEME = new Map();
 for (const theme of THEMES) {
   for (const region of theme.regions) REGION_TO_THEME.set(region, theme.id);
 }
 
-/**
- * 归类一条内容。
- * @param {string} title 视频标题
- * @param {string} [tname] 二级分区名（可选，用于兜底）
- * @returns {string} 主题 id 或 UNCLASSIFIED
- */
 export function classifyTheme(title, tname) {
   const text = String(title ?? '');
   if (text) {

@@ -1,13 +1,4 @@
-// tools/trend.mjs
-// 多天趋势对比：把 data/cocoon.db 里每个采样日的核心指标并排列出来。
-//
-// 为什么需要：单日指数只能说明「今天窄不窄」，趋势才说明「是不是在收窄」。
-// 连续采样 3 天以上才有意义（README 里的「指数趋势比单次绝对值有意义」）。
-//
-// 用法：
-//   node tools/trend.mjs              # 全部快照日期
-//   node tools/trend.mjs --days 7     # 只看最近 7 天
-//   node tools/trend.mjs --db path
+// Multi-day trend comparison across stored snapshots.
 
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';

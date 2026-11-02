@@ -1,13 +1,4 @@
-/**
- * bili-cocoon · 中文 Markdown 报告渲染层
- *
- * 纯展示函数：不做 IO，只把 cocoonScore 的结果排版成文本。
- * 输出对同一输入是确定的（不读当前时间、不使用随机数）。
- *
- * 方法学口径（报告里也会写明）：
- *   主指标 = 一级分区上的信息熵（Fu et al. 2024, Front. Phys. 12:1423851 的 B站研究做法），
- *   辅以有效分区数 exp(H)、HHI、UP 曝光 Gini；重合度与 JSD 只作诊断，不进主分。
- */
+// Renders a Markdown report from a cocoonScore result. Pure rendering, no IO.
 
 import { categoryCounts, uploaderCounts } from './metrics.js';
 
@@ -30,7 +21,6 @@ function num(x, digits = 2) {
   return Number.isFinite(n) ? n.toFixed(digits) : '-';
 }
 
-/** 兜底：结果里没有 TOP 列表时从 items 现算。 */
 function fallbackTop(items, kind) {
   const counts = kind === 'category' ? categoryCounts(items) : uploaderCounts(items);
   return [...counts.entries()]
@@ -113,7 +103,6 @@ export function renderReport(result, opts = {}) {
   });
   lines.push('');
 
-  // 主题浓度：分区宽不代表内容散。分类口径写在下面，避免读者把「覆盖率」当成准确率。
   const th = result.themes;
   if (th && th.top?.length) {
     lines.push('### 🧩 主题浓度');
