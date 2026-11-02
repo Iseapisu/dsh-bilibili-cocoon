@@ -216,6 +216,7 @@ It is a **separate package on purpose**: `@seiuna/dsh-bilibili-plugin` is shippe
 | `attribution` | array | up to 3 themes drilled down to uploaders and videos — [below](#attribution) |
 | `advice` | object \| null | one sentence from a fixed rule, never a model call — [below](#advice) |
 | `trend` | object | the last 7 days — [below](#trend) |
+| `breakout` | object | what the guest feed carried that the home feed did not — [below](#breakout) |
 | `attributionError`, `feedFocusError`, `trendError` | string | present only when that block failed; the rest of the body is still valid |
 
 `share` and `coverage` are fractions of **classified** items, not of all rows — items the classifier cannot place are excluded from the denominator (see [Theme concentration](#theme-concentration-diagnostic)). Shares carry 4 decimals, `ratio` 2.
@@ -308,6 +309,23 @@ The sentence quotes the **dedup** multiple (`ratioDedup`), so it agrees with the
 - Never read `cocoon` without `basis`. The three points above are all `history` over 209/209/210 rows, so 23.1 / 22.7 / 21.1 describe **watch history**; the 84-row feed scores 14.9 on the same formula, and a 28-row `rcmd` snapshot 18.4. A `feed`-based point and a `history`-based point are not comparable.
 - Each metric degrades on its own: a day with snapshot data but no `exposure` rows still gets a point, with `amplification: null` and `themes: null`. `null` means "not computable", never zero.
 - The window ends at the newest day in `snapshot` **or** `exposure`, which can be newer than `date`.
+
+### `breakout`
+
+What the guest baseline carried that the home feed did not. The two sides share almost nothing — 1 video out of 38 on 2026-11-02 — so nearly every guest video is something the account never saw.
+
+| field | meaning |
+|---|---|
+| `candidates` | guest videos absent from the logged-in feed, counted before the filters below |
+| `items[].bvid` / `.title` / `.upName` / `.url` | the video itself; `url` opens it on Bilibili |
+| `items[].theme` / `.themeName` | its theme |
+| `items[].loginShare` / `.guestShare` | that theme's share on each side, dedup measure |
+| `items[].gap` | `guestShare − loginShare`; diagnostic only, never the sort key |
+| `items[].upSeen` | whether that uploader appeared in the home feed |
+
+A theme qualifies only when `gap > 0`: the guest side has to carry more of it than the account does, or there is nothing suppressed to surface. Entries are then ordered by `loginShare` **ascending**, rarest first. Ordering by `gap` instead ranks whatever the guest feed happens to over-serve, which can still be a theme the account already sees 14.6 % of the time.
+
+At most five rows, one per theme and one per uploader, and often fewer: on a given day only four or five themes out of ten have a positive gap, and nothing is padded to fill the list. This block describes what a newcomer sees and the account does not — it is not a claim about what the account would enjoy.
 
 ## Limitations
 

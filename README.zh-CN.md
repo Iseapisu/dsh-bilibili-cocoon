@@ -205,6 +205,7 @@ node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分�
 | `attribution` | array | 最多 3 个主题，下钻到 UP 主和视频——见[下文](#attribution) |
 | `advice` | object \| null | 一句确定性规则生成的建议，不是模型输出——见[下文](#advice) |
 | `trend` | object | 最近 7 天——见[下文](#trend) |
+| `breakout` | object | 游客流里出现、首页没有的内容——见[下文](#breakout) |
 | `attributionError`、`feedFocusError`、`trendError` | string | 只有对应块出错时才出现，其余字段照常返回 |
 
 `share` 和 `coverage` 的分母是**已分类**条目，不是全部行；分类器认不出的条目不进分母（见「主题浓度」）。
@@ -312,6 +313,23 @@ node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分�
 - 各指标各自降级：只有 snapshot、没有 `exposure` 的天照样有点，但 `amplification` 和 `themes` 是 `null`。
   `null` 是「算不出来」，不是 0。
 - 窗口终点取 `snapshot` **或** `exposure` 里最新的那天，可能比 `date` 还新。
+
+### `breakout`
+
+游客基线里出现了、但登录首页里没有的内容。两边几乎不重叠——2026-11-02 那天 38 支里只有 1 支相同——所以游客流里的视频基本都是这个账号没见过的。
+
+| 字段 | 含义 |
+|---|---|
+| `candidates` | 登录首页缺失的游客视频数，在下述过滤之前统计 |
+| `items[].bvid` / `.title` / `.upName` / `.url` | 视频本身；`url` 在 B站打开 |
+| `items[].theme` / `.themeName` | 它所属的主题 |
+| `items[].loginShare` / `.guestShare` | 该主题在两侧的份额（去重口径） |
+| `items[].gap` | `guestShare − loginShare`；仅作诊断，从不用作排序键 |
+| `items[].upSeen` | 这个 UP 主是否在登录首页出现过 |
+
+一个主题只有在 `gap > 0` 时才可能入选：游客那边必须比账号这边更常见，否则就没有「被压制」的内容可讲。入选后按 `loginShare` **升序**排，最罕见的主题在前。若改成按 `gap` 排，排上来的是游客流恰好过量供给的东西——那可能是一个账号本来就看 14.6% 的主题。
+
+最多五条，同一主题、同一 UP 主各最多一条，而且常常不足五条：某一天十个主题里往往只有四五个 gap 为正，不足也不凑数。这一块描述的是「新人看得到、这个账号看不到」，不是「这个账号会喜欢」。
 
 ## 局限（引用数字前先读）
 
