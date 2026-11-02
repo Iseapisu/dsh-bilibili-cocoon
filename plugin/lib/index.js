@@ -64,6 +64,127 @@ function topThemes(counts, total, themeName, limit = 5) {
     .map(([id, n]) => ({ id, name: themeName(id), n, share: pct(n, total) }));
 }
 
+// ----------------------------------------------------------------------
+// Attribution
+// ----------------------------------------------------------------------
+
+const ATTRIBUTION_RATIO = 1.2;
+const ATTRIBUTION_LIMIT = 3;
+const DOMINANT_UP_SHARE = 0.3;
+
+const formatShare = (share) => `${(Number(share) * 100).toFixed(1)}%`;
+const formatRatio = (ratio) => Number(ratio).toFixed(2);
+const formatUpShare = (share) => `${(Number(share) * 100).toFixed(0)}%`;
+
+function uploaderKey(row) {
+  if (row.mid !== null && row.mid !== undefined) return `mid:${row.mid}`;
+  if (row.upName !== null && row.upName !== undefined && row.upName !== '') return `up:${row.upName}`;
+  return null;
+}
+
+function repeatRateOf(repeats, appearances) {
+  return appearances > 0 ? Number((repeats / appearances).toFixed(2)) : 0;
+}
+
+function buildAttribution(themes, amplification, loginRows) {
+  const targets = amplification
+    .filter((a) => a.ratio !== null && a.ratio > ATTRIBUTION_RATIO)
+    .slice(0, ATTRIBUTION_LIMIT);
+
+  return targets.map((a) => {
+    const rows = loginRows.filter((r) => themes.classifyTheme(r.title, r.tname) === a.id);
+    const videos = new Map();
+    const uploaders = new Map();
+
+    for (const row of rows) {
+      const video = videos.get(row.bvid) ?? {
+        bvid: row.bvid,
+        title: row.title ?? null,
+        upName: row.upName ?? null,
+        mid: row.mid ?? null,
+        rounds: new Set(),
+      };
+      video.rounds.add(row.round);
+      videos.set(row.bvid, video);
+
+      const key = uploaderKey(row);
+      if (!key) continue;
+      const up = uploaders.get(key) ?? { mid: row.mid ?? null, name: row.upName ?? null, n: 0 };
+      up.n += 1;
+      if (up.name === null && row.upName) up.name = row.upName;
+      if (up.mid === null && row.mid !== null && row.mid !== undefined) up.mid = row.mid;
+      uploaders.set(key, up);
+    }
+
+    const appearances = rows.length;
+    const uniqueBvids = videos.size;
+    const topUps = [...uploaders.values()]
+      .sort((a, b) => b.n - a.n)
+      .slice(0, ATTRIBUTION_LIMIT)
+      .map((up) => ({ mid: up.mid, name: up.name, n: up.n, share: pct(up.n, appearances) }));
+
+    const topVideos = [...videos.values()]
+      .map((video) => ({ video, upN: uploaders.get(uploaderKey(video))?.n ?? 0 }))
+      .sort((a, b) => b.video.rounds.size - a.video.rounds.size || b.upN - a.upN)
+      .slice(0, ATTRIBUTION_LIMIT)
+      .map(({ video }) => ({
+        bvid: video.bvid,
+        title: video.title,
+        upName: video.upName,
+        mid: video.mid,
+        rounds: video.rounds.size,
+        url: `https://www.bilibili.com/video/${video.bvid}`,
+      }));
+
+    return {
+      id: a.id,
+      name: a.name,
+      ratio: a.ratio,
+      loginShare: a.loginShare,
+      guestShare: a.guestShare,
+      appearances,
+      uniqueBvids,
+      repeatRate: repeatRateOf(appearances - uniqueBvids, appearances),
+      topUps,
+      topVideos,
+    };
+  });
+}
+
+function buildAdvice(attribution, headlineId) {
+  if (!attribution.length) return null;
+  // Prefer the headline theme so badge and advice never disagree; fall back to
+  // the highest ratio when the headline is absent or not attributed.
+  const top =
+    attribution.find((a) => a.id === headlineId) ??
+    attribution.reduce((best, cur) => (cur.ratio > best.ratio ? cur : best), attribution[0]);
+  const lead = top.topUps[0];
+  const head = `${top.name} 占你首页 ${formatShare(top.loginShare)}，是游客基线的 ${formatRatio(top.ratio)} 倍。`;
+
+  if (lead && lead.share >= DOMINANT_UP_SHARE) {
+    const who = lead.name ?? (lead.mid === null || lead.mid === undefined ? null : `mid ${lead.mid}`);
+    if (who) {
+      const repeats = top.appearances - top.uniqueBvids;
+      const tail = repeats > 0 ? `，重复曝光 ${repeats} 次` : '';
+      return {
+        theme: top.id,
+        name: top.name,
+        ratio: top.ratio,
+        kind: 'narrow',
+        text: `${head}其中 ${formatUpShare(lead.share)} 来自同一 UP 主「${who}」${tail} —— 想收窄，先别点这类封面。`,
+      };
+    }
+  }
+
+  return {
+    theme: top.id,
+    name: top.name,
+    ratio: top.ratio,
+    kind: 'watch',
+    text: `${head}没有单一 UP 主主导，是题材层面的放大 —— 想换口味，主动搜点别的内容。`,
+  };
+}
+
 export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPath()) {
   let themes;
   try {
@@ -96,7 +217,9 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
     }
     const date = dates[0];
 
-    const expoRows = db.prepare('SELECT kind, round, bvid, tid, tname, title FROM exposure WHERE date = ?').all(date);
+    const expoRows = db
+      .prepare('SELECT kind, round, bvid, tid, tname, mid, upName, title FROM exposure WHERE date = ?')
+      .all(date);
     const historyRows = db
       .prepare("SELECT title, tname, upName FROM snapshot WHERE date = ? AND source = 'history'")
       .all(date);
@@ -119,7 +242,8 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
       };
     };
 
-    const login = build(expoRows.filter((r) => r.kind === 'login'));
+    const loginRows = expoRows.filter((r) => r.kind === 'login');
+    const login = build(loginRows);
     const guest = build(expoRows.filter((r) => r.kind === 'guest'));
     const history = build(historyRows);
 
@@ -147,6 +271,21 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
 
     const head = amplification.find((a) => a.ratio !== null && a.ratio > 1.2);
 
+    let attribution = [];
+    let advice = null;
+    let attributionError = null;
+    try {
+      attribution = buildAttribution(themes, amplification, loginRows);
+      advice = buildAdvice(attribution, head?.id);
+    } catch (err) {
+      // Attribution is an enhancement; a failure here must not hide the panel.
+      attribution = [];
+      advice = null;
+      attributionError = String(err && err.message ? err.message : err);
+    }
+
+    const headline = head ? { id: head.id, name: head.name, ratio: head.ratio } : null;
+
     return {
       ok: true,
       date,
@@ -156,7 +295,10 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
       guest: { count: guest.count, coverage: guest.coverage, top: guest.top },
       history: { count: history.count, coverage: history.coverage, top: history.top },
       amplification: amplification.slice(0, 6),
-      headline: head ? { name: head.name, ratio: head.ratio } : null,
+      headline,
+      attribution,
+      advice,
+      ...(attributionError === null ? {} : { attributionError }),
     };
   } catch (err) {
     return { ok: false, error: `汇总失败: ${err.message}`, dbPath };
