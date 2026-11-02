@@ -114,7 +114,12 @@ v1 就是这么把 28 条内容算出 0.98 熵、误判成「开阔」的。
 | **曝光侧** | `rcmd`（首页推荐） | 算法推给我什么 | `exposure` |
 
 `score` 的茧房指数**只代表消费侧**。消费结构健康不等于推荐流不窄——
-2026-11-02 实测：同一时刻 Web 游客流 AI 主题占 9.9%，登录流占 32.1%，而观看历史里只占 16.7%。
+2026-11-02 实测（3 轮采样）：Web 游客流 AI 主题占 11.3%，登录流占 26.8%，观看历史里只占 17.7%。
+推荐流比实际在看的推得多 1.5 倍，比陌生人看到的多 2.4 倍。
+
+而且它**不是靠反复推同几条实现的**：登录流 19 条 AI 内容来自 19 个不同视频、19 个不同 UP 主
+（`repeatRate: 0`，见 [`attribution`](#attribution)）——是整块题材分布的倾斜，不是几条片子在循环。
+数重复行在这里什么都发现不了，只能比分布。
 
 ### 基线怎么取
 
@@ -149,6 +154,121 @@ node tools/exposure-login.mjs 3 28    # 曝光侧采样：登录流 vs 游客基
 node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分散度/内容重合度）
 ```
 
+## `GET /dsh-bilibili-cocoon/summary` 返回什么
+
+面板读的就是这个接口，返回什么由 `plugin/lib/index.js` 里的 `buildSummary()` 决定。始终是 `200`，顶层字段：
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `ok` | boolean | 成功为 `true`；失败时整个 body 收缩成 `{ ok: false, error, dbPath }`，状态码仍是 200 |
+| `date` | string | 这份汇总描述的曝光日（`YYYY-MM-DD`），取 `exposure` 表最新的一天，不是「今天」 |
+| `dbPath` | string | 实际读的库（只读打开） |
+| `rounds` | number | `date` 那天的数据来自几个不同采样轮次 |
+| `login`、`guest`、`history` | object | `{ count, coverage, top }`——`count` 是行数，`coverage` 是归类覆盖率，`top` 最多 5 条 `{ id, name, n, share }` |
+| `amplification` | array | 最多 6 条 `{ id, name, loginShare, guestShare, historyShare, ratio }`，按 `loginShare − guestShare` 降序 |
+| `headline` | object \| null | `{ id, name, ratio }`——按上面那个顺序，第一条 `ratio > 1.2` 的主题 |
+| `attribution` | array | 最多 3 个主题，下钻到 UP 主和视频——见[下文](#attribution) |
+| `advice` | object \| null | 一句确定性规则生成的建议，不是模型输出——见[下文](#advice) |
+| `trend` | object | 最近 7 天——见[下文](#trend) |
+| `attributionError`、`trendError` | string | 只有对应块出错时才出现，其余字段照常返回 |
+
+`share` 和 `coverage` 的分母是**已分类**条目，不是全部行；分类器认不出的条目不进分母（见「主题浓度」）。
+份额保留 4 位小数，`ratio` 保留 2 位。
+
+`headline` 认的是「份额差」不是「倍数」：2026-11-02 当天影视动漫的 `ratio` 更高（2.74×），
+但 `headline` 是 AI / 大模型（2.36×），因为它的登录份额与游客份额差距更大。
+
+### `attribution`
+
+最多 3 项，按 `loginShare − guestShare` 降序——和 `amplification` 同序，所以 `attribution[0]` 是「份额差最大」的主题，
+不是「倍数最大」的那个。只有 `ratio > 1.2` 的主题进得来。
+
+| 字段 | 含义 |
+|---|---|
+| `id`、`name` | 主题 id 与显示名 |
+| `ratio`、`loginShare`、`guestShare` | 直接取自对应的 `amplification` 行 |
+| `appearances` | 该主题在登录流里的**行数**，跨轮次累计——同一个 `bvid` 出现在 3 轮里算 3 行 |
+| `uniqueBvids` | 去重后的视频数 |
+| `repeatRate` | `(appearances − uniqueBvids) / appearances`，重复行占比。`0` 表示每一行都是不同视频 |
+| `topUps` | 最多 3 条 `{ mid, name, n, share }`；`n` 是行数，`share` 是 `n / appearances` |
+| `topVideos` | 最多 3 条 `{ bvid, title, upName, mid, rounds, url }`；`rounds` 是这个视频在多少个**不同轮次**里出现过（也是排序键，反复推的排前面） |
+
+```json
+{
+  "id": "ai",
+  "name": "AI / 大模型",
+  "ratio": 2.36,
+  "loginShare": 0.2676,
+  "guestShare": 0.1132,
+  "appearances": 19,
+  "uniqueBvids": 19,
+  "repeatRate": 0,
+  "topUps": [{ "mid": 74513608, "name": "哈哈哈哈哈估计", "n": 1, "share": 0.0526 }],
+  "topVideos": [{
+    "bvid": "BV19q8z6LEnu",
+    "title": "DFlash 2：给Qwen3.8-27B配个抢答小模型…",
+    "upName": "哈哈哈哈哈估计",
+    "mid": 74513608,
+    "rounds": 1,
+    "url": "https://www.bilibili.com/video/BV19q8z6LEnu"
+  }]
+}
+```
+
+### `advice`
+
+没有够格的主题时为 `null`，否则是 `{ theme, name, ratio, kind, text }`。
+
+它由**固定规则生成，不是 LLM**——不发请求、不拼 prompt，同样输入永远同样一句：
+
+- `kind: 'narrow'`：该主题头部 UP 主的份额 ≥ 30%（即 `topUps[0].share`），放大由单一 UP 主撑着，文案里会点名这个 UP 主。
+- `kind: 'watch'`：没有 UP 主到 30%，放大发生在题材层面。
+
+`advice.theme` 先从 `attribution` 里按 `headline.id` 找，所以徽章和建议句不会各说一个主题；
+只有 headline 没通过 1.2× 筛选时，才回退到 `ratio` 最高的那项。
+
+### `trend`
+
+```json
+{
+  "days": 7,
+  "covered": 3,
+  "points": [
+    { "date": "2026-10-30", "cocoon": 23.1, "amplification": null, "themes": null, "samples": 209 },
+    { "date": "2026-11-01", "cocoon": 22.7, "amplification": null, "themes": null, "samples": 209 },
+    { "date": "2026-11-02", "cocoon": 21.1, "amplification": 2.36, "themes": 10, "samples": 210 }
+  ]
+}
+```
+
+- `days` 是窗口宽度（7），`covered` 是其中真有数据的天数。
+- `points` 按日期升序，**只含有数据的天**——缺的日期不补零。判断「这周有多少数据」看 `covered`，不要看 `points.length`。
+- 每个点：`cocoon` 是 0–100 的茧房指数，**越低越开阔**；`amplification` 是当天的 `headline.ratio`；
+  `themes` 是登录流里出现的不同主题数；`samples` 是茧房指数背后的样本条数。
+- 各指标各自降级：只有 snapshot、没有 `exposure` 的天照样有点，但 `amplification` 和 `themes` 是 `null`。
+  `null` 是「算不出来」，不是 0。
+- 窗口终点取 `snapshot` **或** `exposure` 里最新的那天，可能比 `date` 还新。
+
+## 现在能读到什么
+
+2026-11-02、3 轮采样，未经修饰的一份汇总：
+
+| | 条数 | 归类覆盖率 | 最高主题 |
+|---|---:|---:|---|
+| 登录流 | 84 | 84.5 % | AI / 大模型 26.8 % |
+| 游客基线 | 82 | 64.6 % | 搞笑整活 17.0 % |
+| 观看历史 | 210 | 94.3 % | 生活日常 23.7 % |
+
+AI / 大模型 在登录流里占 26.8%，游客基线里占 11.3%——**2.36×**；在观看历史里占 17.7%，
+也就是说推荐流比账号自己实际在看的多推了 1.5 倍。
+
+把这 2.36× 往下钻：
+
+- `appearances` 19、`uniqueBvids` 19、`repeatRate` 0——19 条 AI 内容是 19 个不同视频、19 个不同 UP 主。
+  其中最强的一个只占该主题 5.3%，离 30% 的门槛差得远，所以 `advice.kind` 是 `watch`：题材层面放大，不是单一 UP 主。
+- 这一周：`2026-10-30 → 23.1`、`2026-11-01 → 22.7`、`2026-11-02 → 21.1`，`covered: 3` / 7。
+  10-31 没有快照，它不出现在 `points` 里，而不是被画成 0。三天动 2 分是方向，还不是趋势——对着样本量读，别当结论。
+
 ## 依赖与限制
 
 - Node ≥ 22（用到内置 `node:sqlite`），无 npm 依赖。
@@ -173,6 +293,7 @@ tools/          build-tid-map / fix-region-labels / build-region-map / collect-l
 
 ## 后续
 
+- [x] 把放大的主题下钻到具体 UP 主和视频（`attribution`）
+- [x] 连续多天采样画趋势（`trend`，最近 7 天茧房指数）
 - [ ] 包成 DSH 插件：`bilibili_cocoon_collect` / `bilibili_cocoon_score` 两个工具
-- [ ] 连续多天采样画趋势（熵随时间下降 = 茧房加剧）
 - [ ] 标签维度（`/x/tag/archive/tags` 可用）做主题聚类

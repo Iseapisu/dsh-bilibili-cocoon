@@ -21,15 +21,17 @@ Conflating the two is the most common mistake in filter-bubble tooling. A health
 
 A single "bubble score" computed from watch history answers *"is my viewing diverse?"* — not *"is the feed feeding me the same thing?"*
 
-Measured on 2026-11-02, same account, same hour:
+Measured on 2026-11-02, same account, same hour, three sampling rounds:
 
 | Group | AI / LLM content |
 |---|---:|
-| Guest baseline (no account history) | 9.9 % |
-| Logged-in recommendation feed | **32.1 %** |
-| Actual watch history | 16.7 % |
+| Guest baseline (no account history) | 11.3 % |
+| Logged-in recommendation feed | **26.8 %** |
+| Actual watch history | 17.7 % |
 
-The feed pushes 1.9× more of that topic than the user actually consumes, and 3.2× more than a newcomer would see. A consumption-only index would have reported "healthy" and missed the entire story.
+The feed pushes 1.5× more of that topic than the user actually consumes, and 2.4× more than a newcomer would see. A consumption-only index would have reported "healthy" and missed the entire story.
+
+Repetition is not the mechanism either: all 19 AI items in the logged-in feed came from **19 different videos by 19 different uploaders** (`repeatRate: 0`, see [`attribution`](#attribution)). The feed is not re-serving a handful of clips — it tilts the whole topic mix. Counting duplicates would have found nothing here, which is why the tool compares distributions instead of counting repeats.
 
 ## Quick start
 
@@ -174,6 +176,112 @@ The host half only reads `cocoon.db` and serves `GET /dsh-bilibili-cocoon/summar
 
 It is a **separate package on purpose**: `@seiuna/dsh-bilibili-plugin` is shipped as a prebuilt bundle, so adding features there would mean maintaining a fork. Slots are global and ordered, so an independent plugin lands visually next to it without touching upstream code.
 
+## What the summary endpoint returns
+
+`GET /dsh-bilibili-cocoon/summary` answers `200` even when it fails — the only exception is `405` for a non-`GET` and `404` for any other path under the prefix. The body is exactly what `buildSummary()` in [`plugin/lib/index.js`](plugin/lib/index.js) returns:
+
+| key | type | meaning |
+|---|---|---|
+| `ok` | boolean | `true` on success. A failure shrinks the body to `{ ok: false, error, dbPath }` and keeps the 200 |
+| `date` | string | the exposure day being described (`YYYY-MM-DD`) — the newest day in `exposure`, not today |
+| `dbPath` | string | the database that was read (read-only) |
+| `rounds` | number | how many distinct sampling rounds the rows of `date` came from |
+| `login`, `guest`, `history` | object | `{ count, coverage, top }` — `count` rows, `coverage` the classified fraction, `top` up to 5 `{ id, name, n, share }` |
+| `amplification` | array | up to 6 `{ id, name, loginShare, guestShare, historyShare, ratio }`, sorted by `loginShare − guestShare` descending |
+| `headline` | object \| null | `{ id, name, ratio }` — the first theme in that order with `ratio > 1.2` |
+| `attribution` | array | up to 3 themes drilled down to uploaders and videos — [below](#attribution) |
+| `advice` | object \| null | one sentence from a fixed rule, never a model call — [below](#advice) |
+| `trend` | object | the last 7 days — [below](#trend) |
+| `attributionError`, `trendError` | string | present only when that block failed; the rest of the body is still valid |
+
+`share` and `coverage` are fractions of **classified** items, not of all rows — items the classifier cannot place are excluded from the denominator (see [Theme concentration](#theme-concentration-diagnostic)). Shares carry 4 decimals, `ratio` 2.
+
+`headline` follows the amplification order, not the ratio. On 2026-11-02, 影视动漫 had the higher ratio (2.74×) but AI / 大模型 took the headline with 2.36×, because its share gap is larger.
+
+### `attribution`
+
+Up to 3 entries, ordered by `loginShare − guestShare` descending — the same order as `amplification`, so `attribution[0]` is the theme with the largest over-representation, not the largest ratio. Only themes with `ratio > 1.2` qualify.
+
+| field | meaning |
+|---|---|
+| `id`, `name` | theme id and display name |
+| `ratio`, `loginShare`, `guestShare` | copied from the matching `amplification` row |
+| `appearances` | logged-in feed **rows** for the theme across all rounds — the same `bvid` in 3 rounds counts 3 times |
+| `uniqueBvids` | distinct videos |
+| `repeatRate` | `(appearances − uniqueBvids) / appearances`: the fraction of rows that are not a first sighting. `0` means every row was a different video |
+| `topUps` | up to 3 `{ mid, name, n, share }`; `n` is row count, `share` is `n / appearances` |
+| `topVideos` | up to 3 `{ bvid, title, upName, mid, rounds, url }`; `rounds` is how many **distinct** rounds that video showed up in (the sort key — "served again and again" first) |
+
+```json
+{
+  "id": "ai",
+  "name": "AI / 大模型",
+  "ratio": 2.36,
+  "loginShare": 0.2676,
+  "guestShare": 0.1132,
+  "appearances": 19,
+  "uniqueBvids": 19,
+  "repeatRate": 0,
+  "topUps": [{ "mid": 74513608, "name": "哈哈哈哈哈估计", "n": 1, "share": 0.0526 }],
+  "topVideos": [{
+    "bvid": "BV19q8z6LEnu",
+    "title": "DFlash 2：给Qwen3.8-27B配个抢答小模型…",
+    "upName": "哈哈哈哈哈估计",
+    "mid": 74513608,
+    "rounds": 1,
+    "url": "https://www.bilibili.com/video/BV19q8z6LEnu"
+  }]
+}
+```
+
+### `advice`
+
+`null` when no theme qualifies; otherwise `{ theme, name, ratio, kind, text }`.
+
+It is **generated by a fixed rule, not by a model** — no network call, no prompt, so the same input always yields the same sentence:
+
+- `kind: 'narrow'` — the theme's leading uploader holds ≥ 30 % of its rows (`topUps[0].share`), so one channel drives the amplification. The text names that uploader.
+- `kind: 'watch'` — no uploader reaches 30 %; the amplification sits at the topic level.
+
+`advice.theme` is resolved from `attribution` by `headline.id` first, so the badge and the advice sentence always name the same theme; the highest-`ratio` entry is only a fallback for a headline that did not survive the 1.2× filter.
+
+### `trend`
+
+```json
+{
+  "days": 7,
+  "covered": 3,
+  "points": [
+    { "date": "2026-10-30", "cocoon": 23.1, "amplification": null, "themes": null, "samples": 209 },
+    { "date": "2026-11-01", "cocoon": 22.7, "amplification": null, "themes": null, "samples": 209 },
+    { "date": "2026-11-02", "cocoon": 21.1, "amplification": 2.36, "themes": 10, "samples": 210 }
+  ]
+}
+```
+
+- `days` is the window width (7), `covered` is how many of those days actually have data.
+- `points` is sorted by date ascending and holds **only days that have data** — a missing day is not back-filled with zeros. Read `covered`, not `points.length`, as "how much of the week I have".
+- Per point: `cocoon` is the consumption index 0–100, **lower is more open**; `amplification` is that day's `headline.ratio`; `themes` is the number of distinct themes in the logged-in feed; `samples` is the item count behind the cocoon score.
+- Each metric degrades on its own: a day with snapshot data but no `exposure` rows still gets a point, with `amplification: null` and `themes: null`. `null` means "not computable", never zero.
+- The window ends at the newest day in `snapshot` **or** `exposure`, which can be newer than `date`.
+
+## What you can read now
+
+One unedited summary from 2026-11-02, three sampling rounds:
+
+| | items | theme coverage | top theme |
+|---|---:|---:|---|
+| Logged-in feed | 84 | 84.5 % | AI / 大模型 26.8 % |
+| Guest baseline | 82 | 64.6 % | 搞笑整活 17.0 % |
+| Watch history | 210 | 94.3 % | 生活日常 23.7 % |
+
+AI / 大模型 is 26.8 % of the logged-in feed against 11.3 % of the guest baseline — **2.36×**. It is 17.7 % of watch history, so the feed pushes it 1.5× harder than the account actually watches it.
+
+Drilling into that 2.36×:
+
+- `appearances` 19, `uniqueBvids` 19, `repeatRate` 0 — the 19 AI rows were 19 different videos from 19 different uploaders. The strongest one holds 5.3 % of the theme, nowhere near the 30 % threshold, so `advice.kind` is `watch`: topic-level amplification, not one channel.
+- The week: `2026-10-30 → 23.1`, `2026-11-01 → 22.7`, `2026-11-02 → 21.1`, `covered: 3` of 7. 10-31 has no snapshot and is absent from `points` rather than plotted as zero. Two points of movement in three days is direction, not a trend yet — read it against the sample size, not as a verdict.
+
 ## Requirements
 
 - Node ≥ 22 (uses built-in `node:sqlite`); no npm dependencies.
@@ -199,8 +307,8 @@ tools/                  mapping generators, backfill, trend, login-aware collect
 
 ## Roadmap
 
-- [ ] Attribute amplified themes down to specific uploaders and videos (click-through)
-- [ ] Weekly amplification trend line, not just the latest snapshot
+- [x] Attribute amplified themes down to specific uploaders and videos (`attribution`)
+- [x] Weekly amplification trend line, not just the latest snapshot (`trend`)
 - [ ] Tag-based clustering (`/x/tag/archive/tags` is available) to replace keyword matching
 - [ ] Register agent-facing tools (`cocoon_report`) so the panel and the agent share one code path
 
