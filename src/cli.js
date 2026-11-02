@@ -9,6 +9,10 @@ import { pathToFileURL } from 'node:url';
 const DEFAULT_DB_PATH = 'data/cocoon.db';
 const DEFAULT_REPORT_PATH = 'report.md';
 
+// ----------------------------------------------------------------------
+// Usage / errors
+// ----------------------------------------------------------------------
+
 const USAGE = `bili-cocoon —— 度量 B 站推荐流的信息茧房指数（零依赖）
 
 用法：
@@ -69,6 +73,10 @@ class CliError extends Error {
 function usageError(message, hint = '') {
   return new CliError(message, 1, `${hint ? hint + '\n' : ''}查看用法：node src/cli.js --help`);
 }
+
+// ----------------------------------------------------------------------
+// Argument parsing
+// ----------------------------------------------------------------------
 
 const VALUE_FLAGS = new Set(['db', 'limit', 'days', 'out', 'cookie-file']);
 const BOOL_FLAGS = new Set(['json', 'login', 'help', 'no-enrich']);
@@ -135,6 +143,10 @@ function intFlag(flags, name, fallback, min, max) {
   }
   return n;
 }
+
+// ----------------------------------------------------------------------
+// Shared helpers
+// ----------------------------------------------------------------------
 
 async function importModule(spec, label) {
   try {
@@ -210,6 +222,10 @@ function personalizedLabel(value) {
   return '未知';
 }
 
+// ----------------------------------------------------------------------
+// Table rendering
+// ----------------------------------------------------------------------
+
 function displayWidth(text) {
   let width = 0;
   for (const ch of String(text)) {
@@ -266,6 +282,10 @@ function jsonReplacer(_key, value) {
   if (typeof value === 'number' && !Number.isFinite(value)) return null;
   return value;
 }
+
+// ----------------------------------------------------------------------
+// Command: collect
+// ----------------------------------------------------------------------
 
 async function cmdCollect(flags) {
   const dbPath = flags.db || DEFAULT_DB_PATH;
@@ -389,6 +409,10 @@ async function cmdCollect(flags) {
     console.log('提示: 游客模式下 rcmd 是通用流（非个性化），history 需要登录 cookie 才有数据。');
   }
 }
+
+// ----------------------------------------------------------------------
+// Shared loading for score & report
+// ----------------------------------------------------------------------
 
 async function computeScore(flags) {
   const dbPath = flags.db || DEFAULT_DB_PATH;
@@ -554,6 +578,10 @@ function printScore(result, context) {
   }
 }
 
+// ----------------------------------------------------------------------
+// Command: score
+// ----------------------------------------------------------------------
+
 async function cmdScore(flags) {
   const { result, context } = await computeScore(flags);
   if (flags.json) {
@@ -562,6 +590,10 @@ async function cmdScore(flags) {
   }
   printScore(result, context);
 }
+
+// ----------------------------------------------------------------------
+// Command: report
+// ----------------------------------------------------------------------
 
 async function cmdReport(flags) {
   const { result, context } = await computeScore(flags);
@@ -599,6 +631,10 @@ async function cmdReport(flags) {
   process.stdout.write(text);
 }
 
+// ----------------------------------------------------------------------
+// Entry point
+// ----------------------------------------------------------------------
+
 async function main(argv = process.argv.slice(2)) {
   let parsed;
   try {
@@ -627,6 +663,10 @@ async function main(argv = process.argv.slice(2)) {
     return reportError(err);
   }
 }
+
+// ----------------------------------------------------------------------
+// Command: exposure
+// ----------------------------------------------------------------------
 
 async function cmdExposure(flags) {
   const { cookie } = resolveCookie(flags);

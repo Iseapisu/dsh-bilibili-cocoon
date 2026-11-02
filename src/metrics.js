@@ -7,6 +7,10 @@ import { UNCLASSIFIED, classifyTheme, themeName } from './themes.js';
 const LN = Math.log;
 export const MAX_CATEGORIES = PARENT_CATEGORIES.length; // 19
 
+// ----------------------------------------------------------------------
+// Basic statistics
+// ----------------------------------------------------------------------
+
 function tally(values) {
   const m = new Map();
   for (const v of values) {
@@ -95,6 +99,10 @@ export function jsDivergence(countsA, countsB) {
   return Math.min(1, js / LN(2));
 }
 
+// ----------------------------------------------------------------------
+// Field aggregation
+// ----------------------------------------------------------------------
+
 export function categoryCounts(items) {
   return tally((items ?? []).map((it) => parentOf(it?.tname)));
 }
@@ -121,6 +129,10 @@ export function reasonMix(items) {
   for (const k of Object.keys(out)) out[k] /= list.length;
   return out;
 }
+
+// ----------------------------------------------------------------------
+// Reproducible bootstrap
+// ----------------------------------------------------------------------
 
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -155,6 +167,10 @@ function bootstrapEntropyCI(cats, seed, reps = 400) {
  * @param {{feed?: any[], history?: any[], ranking?: any[], date?: string}} input
  * @param {{date?: string}} [options]
  */
+// ----------------------------------------------------------------------
+// Main entry
+// ----------------------------------------------------------------------
+
 export function cocoonScore(input = {}, options = {}) {
   const feed = input.feed ?? [];
   const history = input.history ?? [];

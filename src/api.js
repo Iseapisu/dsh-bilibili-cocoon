@@ -18,8 +18,9 @@ const VIEW_URL = 'https://api.bilibili.com/x/web-interface/view';
 
 const PERSONALIZED_REASON_RE = /相关推荐|热门|关注/;
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------
+// Small helpers
+// ----------------------------------------------------------------------
 
 function numOrNull(v) {
   if (v === undefined || v === null || v === '') return null;
@@ -117,8 +118,9 @@ function sliceLimit(list, limit) {
   return list.slice(0, n);
 }
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------
+// Home feed
+// ----------------------------------------------------------------------
 
 export async function fetchRcmd({ limit = 20, cookie = '', buvid = '', fetchImpl = undefined } = {}) {
   const want = Math.min(30, Number(limit) > 0 ? Math.floor(Number(limit)) : 20);
@@ -168,8 +170,9 @@ export async function fetchRcmd({ limit = 20, cookie = '', buvid = '', fetchImpl
   return { items, personalized };
 }
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------
+// Watch history
+// ----------------------------------------------------------------------
 
 export async function fetchHistory({ limit = 20, cookie = '', fetchImpl = undefined, pages = 1 } = {}) {
   const url = `${HISTORY_URL}?ps=${encodeURIComponent(limit)}&max=0&view_at=0&business=&type=archive`;
@@ -211,8 +214,9 @@ export async function fetchHistory({ limit = 20, cookie = '', fetchImpl = undefi
   return { items: collected, personalized: false };
 }
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------
+// Site ranking
+// ----------------------------------------------------------------------
 
 export async function fetchRanking({ limit = 20, cookie = '', fetchImpl = undefined } = {}) {
   const url = `${RANKING_URL}?rid=0&type=all`;

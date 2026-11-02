@@ -37,6 +37,10 @@ INSERT OR REPLACE INTO snapshot
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
+// ----------------------------------------------------------------------
+// Helpers
+// ----------------------------------------------------------------------
+
 function toText(value) {
   if (value === null || value === undefined) return null;
   const s = String(value);
@@ -124,6 +128,10 @@ function rowToItem(row) {
     pubdate: row.pubdate ?? null,
   };
 }
+
+// ----------------------------------------------------------------------
+// Public API
+// ----------------------------------------------------------------------
 
 export function openStore(path = DEFAULT_DB_PATH) {
   const file = String(path || DEFAULT_DB_PATH);
