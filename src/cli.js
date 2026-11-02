@@ -222,6 +222,25 @@ function personalizedLabel(value) {
   return '未知';
 }
 
+// Tag evidence is not part of the collected rows: it lives in its own
+// video_tag table, keyed by bvid, filled by tools/backfill-tags.mjs. Join it in
+// here, at read time, so the metric layer stays pure and collection stays fast.
+// Accepts either Map<bvid, string[]> or the store's Map<bvid, {tags}> shape; an
+// unknown bvid leaves the item untouched (classifyTheme then ignores the key).
+function tagsOfEntry(entry) {
+  if (Array.isArray(entry)) return entry;
+  return entry && Array.isArray(entry.tags) ? entry.tags : null;
+}
+
+function attachTags(items, tagMap) {
+  const list = items ?? [];
+  if (!(tagMap instanceof Map) || tagMap.size === 0) return list;
+  return list.map((it) => {
+    const tags = it?.bvid ? tagsOfEntry(tagMap.get(it.bvid)) : null;
+    return tags === null ? it : { ...it, tags };
+  });
+}
+
 // ----------------------------------------------------------------------
 // Table rendering
 // ----------------------------------------------------------------------
@@ -421,8 +440,10 @@ async function computeScore(flags) {
   const storeMod = await importModule('./store.js', 'src/store.js');
   const store = storeMod.openStore(dbPath);
   let snapshot;
+  let tagMap = new Map();
   try {
     snapshot = storeMod.listSnapshots(store, days);
+    if (typeof storeMod.listVideoTags === 'function') tagMap = storeMod.listVideoTags(store);
   } finally {
     storeMod.closeStore(store);
   }
@@ -462,6 +483,13 @@ async function computeScore(flags) {
   const history = pickFrom('history');
   const ranking = pickFrom('ranking');
 
+  // The metric layer judges themes from title > region > tags: hand it the same
+  // tag evidence the summary panel uses, otherwise the CLI report and the plugin
+  // disagree on the very same day.
+  const feedItems = attachTags(feed, tagMap);
+  const historyItems = attachTags(history.items, tagMap);
+  const rankingItems = attachTags(ranking.items, tagMap);
+
   if (history.date && history.date !== latest) {
     console.warn(`提示: ${latest} 没有 history 数据，使用 ${history.date} 的最近一次记录`);
   }
@@ -477,7 +505,7 @@ async function computeScore(flags) {
   let result;
   try {
     result = await metrics.cocoonScore(
-      { feed, history: history.items, ranking: ranking.items, date: latest },
+      { feed: feedItems, history: historyItems, ranking: rankingItems, date: latest },
       { date: latest },
     );
   } catch (err) {
@@ -494,14 +522,14 @@ async function computeScore(flags) {
       dbPath: resolve(dbPath),
       days,
       date: latest,
-      feed,
+      feed: feedItems,
       quality: {
-        missingCategory: feed.filter((it) => !it.tname || it.tname === '未知' || /^分区\d+$/.test(it.tname)).length,
+        missingCategory: feedItems.filter((it) => !it.tname || it.tname === '未知' || /^分区\d+$/.test(it.tname)).length,
       },
       counts: {
-        feed: feed.length,
-        history: history.items.length,
-        ranking: ranking.items.length,
+        feed: feedItems.length,
+        history: historyItems.length,
+        ranking: rankingItems.length,
         historyDate: history.date,
         rankingDate: ranking.date,
       },
@@ -698,14 +726,27 @@ async function cmdExposure(flags) {
   });
 
   const store = storeMod.openStore(dbPath);
+  let tagMap = new Map();
   try {
     for (const s of shots.login) storeMod.saveExposure(store, date, 'login', s.round, s.items);
     for (const s of shots.guest) storeMod.saveExposure(store, date, 'guest', s.round, s.items);
+    if (typeof storeMod.listVideoTags === 'function') tagMap = storeMod.listVideoTags(store);
   } finally {
     storeMod.closeStore(store);
   }
 
-  printExposure(exposureMod.summarizeExposure(shots), date);
+  // Same tag join as the host summary: classifyTheme gets title > region > tags
+  // so the CLI's amplification matches what the panel would show for this day.
+  // Freshly sampled bvids have no video_tag row yet; that only means they fall
+  // back to the pre-tag verdicts until tools/backfill-tags.mjs runs.
+  const withTags = (shot) => ({ round: shot.round, items: attachTags(shot.items, tagMap) });
+  const tagged = {
+    rounds: shots.rounds,
+    login: shots.login.map(withTags),
+    guest: shots.guest.map(withTags),
+  };
+
+  printExposure(exposureMod.summarizeExposure(tagged), date);
 }
 
 function printExposure(summary, date) {

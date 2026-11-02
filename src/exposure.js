@@ -18,6 +18,10 @@ async function sampleOnce({ perRound, cookie, enrich }) {
   return r.items;
 }
 
+// Raw sampling only: this never fetches per-video tags, because that would add
+// one request per row to a loop that already sleeps seconds between rounds.
+// video_tag is backfilled separately (tools/backfill-tags.mjs) and joined in at
+// summary time.
 export async function collectExposure({
   rounds = 3,
   perRound = 28,
@@ -76,8 +80,12 @@ export function summarizeExposure({ login, guest }) {
   const G = flat(guest);
   const totalRounds = Math.max(login.length, guest.length, 1);
 
+  // Tags are not collected here (a per-bvid fetch would throttle the sampling
+  // loop). The caller attaches `item.tags` from the video_tag table before
+  // calling this function; when it doesn't, the third argument is undefined and
+  // classifyTheme falls back to title + region, i.e. the pre-tag verdicts.
   const build = (items, shots) => {
-    const themes = distOf(items, (it) => classifyTheme(it.title, it.tname));
+    const themes = distOf(items, (it) => classifyTheme(it.title, it.tname, it.tags));
     const cats = distOf(items, (it) => parentOf(it.tname));
     const ups = distOf(items, (it) => it.upName ?? '(未知)');
     const spread = roundSpread(shots);

@@ -111,8 +111,11 @@ export function uploaderCounts(items) {
   return tally((items ?? []).map((it) => it?.upName));
 }
 
+// Theme evidence is title > region > tags. `tags` is optional on the item shape:
+// callers that cannot supply it (or an older library without a video_tag table)
+// get exactly the pre-tag verdicts, because classifyTheme ignores a missing list.
 export function themeCounts(items) {
-  return tally((items ?? []).map((it) => classifyTheme(it?.title, it?.tname)));
+  return tally((items ?? []).map((it) => classifyTheme(it?.title, it?.tname, it?.tags)));
 }
 
 export function reasonMix(items) {
@@ -165,12 +168,19 @@ function bootstrapEntropyCI(cats, seed, reps = 400) {
 
 /**
  * @param {{feed?: any[], history?: any[], ranking?: any[], date?: string}} input
+ *   Each item may carry an optional `tags: string[]`; it is passed to
+ *   classifyTheme as the third (last-resort) evidence level. Omitting it
+ *   reproduces the pre-tag theme verdicts byte for byte.
  * @param {{date?: string}} [options]
  */
 // ----------------------------------------------------------------------
 // Main entry
 // ----------------------------------------------------------------------
 
+// The index is a function of region entropy, region HHI and uploader Gini only.
+// Theme evidence (title > region > tag) feeds the `themes` diagnostic block and
+// never enters `index`: connecting tags to this function changes what the panel
+// says about themes, not the 0..100 cocoon number.
 export function cocoonScore(input = {}, options = {}) {
   const feed = input.feed ?? [];
   const history = input.history ?? [];

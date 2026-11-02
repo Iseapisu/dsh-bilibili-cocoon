@@ -16,6 +16,7 @@ import {
   categoryCounts,
   uploaderCounts,
   reasonMix,
+  themeCounts,
   cocoonScore,
   MAX_CATEGORIES,
 } from '../src/metrics.js';
@@ -281,4 +282,104 @@ test('cocoonScore：主题浓度只统计已分类条目，未分类不进分母
   assert.equal(result.themes.topName, 'AI / 大模型');
   closeTo(result.themes.topShare, 2 / 3, 1e-3);
   assert.ok(result.themes.effective > 1 && result.themes.effective < 2.5, `effective=${result.themes.effective}`);
+});
+
+// ----------------------------------------------------------------------
+// Tag evidence in the metric layer
+// ----------------------------------------------------------------------
+
+// Verdicts that exist only because of tags: no title keyword, no region. The
+// pre-tag code leaves every one of them unclassified, so these rows are exactly
+// the difference the tag layer is meant to make.
+function tagRescuedItems() {
+  return [
+    { ...makeItem(1), title: '大模型评测', tname: null, tags: [] },
+    { ...makeItem(2), title: '这段正片', tname: null, tags: ['火影忍者', '写轮眼'] },
+    { ...makeItem(3), title: '随便看看', tname: null, tags: ['comfyui'] },
+    { ...makeItem(4), title: '随便看看', tname: '美食记录', tags: ['火影忍者'] },
+    { ...makeItem(5), title: '随便看看', tname: null, tags: ['vlog', '原创'] },
+  ];
+}
+
+const stripTags = (items) => items.map((it) => ({ ...it, tags: undefined }));
+
+test('themeCounts：不传 tags 时与两参 classifyTheme 逐条一致', () => {
+  const items = tagRescuedItems().map((it) => ({ bvid: it.bvid, title: it.title, tname: it.tname }));
+  const counts = themeCounts(items);
+
+  const legacy = new Map();
+  for (const it of items) {
+    const id = classifyTheme(it.title, it.tname);
+    legacy.set(id, (legacy.get(id) ?? 0) + 1);
+  }
+  assert.deepEqual(counts, legacy);
+  assert.equal(counts.get(UNCLASSIFIED), 3);
+});
+
+test('themeCounts：有 tags 时补上标题 + 分区都判不出的行', () => {
+  const items = tagRescuedItems();
+  const counts = themeCounts(items);
+  assert.equal(counts.get(UNCLASSIFIED), 1);
+  assert.equal(counts.get('screen'), 1);
+  assert.equal(counts.get('ai'), 2);
+  // A region verdict still wins over a contradicting tag.
+  assert.equal(counts.get('food'), 1);
+});
+
+test('cocoonScore：不传 tags 时主题结论与两参 classifyTheme 推导完全一致（向后兼容）', () => {
+  const items = tagRescuedItems().map((it) => ({ ...it, tags: undefined }));
+  const result = cocoonScore({ feed: items, history: items, ranking: [], date: '2026-11-02' });
+
+  const legacy = new Map();
+  for (const it of items) {
+    const id = classifyTheme(it.title, it.tname);
+    legacy.set(id, (legacy.get(id) ?? 0) + 1);
+  }
+  const unclassified = legacy.get(UNCLASSIFIED) ?? 0;
+  const sorted = [...legacy].filter(([id]) => id !== UNCLASSIFIED).sort((a, b) => b[1] - a[1]);
+
+  assert.equal(result.themes.unclassified, unclassified);
+  closeTo(result.themes.coverage, (items.length - unclassified) / items.length, 1e-9);
+  assert.deepEqual(
+    result.themes.top.map((t) => ({ id: t.id, n: t.n })),
+    sorted.slice(0, 5).map(([id, n]) => ({ id, n })),
+  );
+  assert.equal(result.themes.topName, 'AI / 大模型');
+});
+
+test('cocoonScore：接入 tags 后未分类减少，index 与旧口径逐位相同', () => {
+  const tagged = tagRescuedItems();
+  const plain = stripTags(tagged);
+  const before = cocoonScore({ feed: plain, history: plain, ranking: [], date: '2026-11-02' });
+  const after = cocoonScore({ feed: tagged, history: tagged, ranking: [], date: '2026-11-02' });
+
+  // The tag layer only rescues rows title and region both missed.
+  assert.equal(before.themes.unclassified, 3);
+  assert.equal(after.themes.unclassified, 1);
+  closeTo(before.themes.coverage, 0.4, 1e-9);
+  closeTo(after.themes.coverage, 0.8, 1e-9);
+  assert.equal(after.themes.topName, 'AI / 大模型');
+  assert.equal(after.themes.top[0].n, 2);
+
+  // index is built from region entropy / HHI / uploader Gini, so theme evidence
+  // must never move it: that is the invariant this migration relies on.
+  assert.equal(after.index, before.index);
+  assert.equal(after.entropyNorm, before.entropyNorm);
+  assert.equal(after.hhi, before.hhi);
+  assert.equal(after.gini, before.gini);
+  assert.equal(after.sampleSize, before.sampleSize);
+  assert.deepEqual(after.subscores, before.subscores);
+});
+
+test('cocoonScore：tags 为 null / 脏值时等同于不传 tags', () => {
+  const items = tagRescuedItems().map((it) => ({ ...it, tags: it.tags.length ? it.tags : null }));
+  const plain = stripTags(items);
+  const withNulls = cocoonScore({ feed: items, history: items, ranking: [], date: '2026-11-02' });
+  const without = cocoonScore({ feed: plain, history: plain, ranking: [], date: '2026-11-02' });
+
+  // classifyTheme treats null exactly like "no list", so the rescued rows stay
+  // rescued while the null-tagged row is simply not rescued.
+  assert.equal(withNulls.themes.unclassified, 1);
+  assert.equal(without.themes.unclassified, 3);
+  assert.equal(withNulls.index, without.index);
 });
