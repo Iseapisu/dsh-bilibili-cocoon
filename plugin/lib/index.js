@@ -289,6 +289,171 @@ function buildFeedFocus(login, guest, themes, amplification) {
 }
 
 // ----------------------------------------------------------------------
+// Breakout picks
+// ----------------------------------------------------------------------
+
+const BREAKOUT_LIMIT = 5;
+
+// Videos the guest feed saw and the home feed never did. A theme has to clear one
+// necessary condition to be picked at all: gap = guestShare - loginShare > 0,
+// i.e. the guest baseline really does carry the theme more than the home feed
+// does. 知识科普 was 6.7% for the guest and 8.5% at home on 2026-11-02, so home
+// already shows it more, nothing is held back, and no row is emitted for it.
+//
+// Picks are then ordered by loginShare ascending: the smallest share of the home
+// feed first. The semantic this block serves is "content you can basically or
+// completely not reach", and that is an absolute exposure figure, not a relative
+// difference. The 2026-11-02 data says why: 影视动漫 held 14.6% of the home feed
+// against 20% of the guest sample - a +5.4pp gap, wider than music's +2.1pp - but
+// at 14.6% the user already sees plenty of it. It can be a pick (gap is positive)
+// yet it sorts last; ranking by gap descending put it second, which is exactly
+// the mistake this order fixes. Music at 1.2% of home is the theme the user most
+// plausibly never encounters, so it goes first even though its gap is small.
+// `gap` is still carried on every item as a diagnostic quantity - it is what
+// separates "you don't care" from "it is there and being filtered out" - but it
+// is no longer the sort key.
+//
+// Ties on loginShare fall back to the larger gap, then to guest-row order (seq)
+// so the list is stable between runs. `upSeen` stays a reported field, not a sort
+// key: it describes one uploader, while the ranking is about themes.
+//
+// A gap of 0 or less drops the theme, which can leave the list shorter than
+// BREAKOUT_LIMIT: a short list is the honest answer. Padding it up to five with
+// zero-gap themes would turn "break out of the cocoon" into "random
+// recommendation".
+//
+// Two collapse rules, both because a list of five rows has to say five things:
+// - one video per theme. Without it the low-share end of the feed fills the
+//   list with itself and the block restates one number five times.
+// - one video per uploader. 37 guest-only videos had 37 distinct uploaders on
+//   the measurement day, so this changes nothing today; it is here for the day
+//   a single UP floods the guest sample.
+//
+// `db` and `date` are in the signature to match the other builders, but this
+// block needs no query: every row, tag and verdict it reads is handed in.
+// Read-only, and total - any failure returns the empty block, never a throw.
+export function buildBreakout(db, options = {}) {
+  const empty = { candidates: 0, items: [] };
+  const { loginRows, guestRows, tagMap, themeMap, themes } = options ?? {};
+
+  try {
+    if (!Array.isArray(loginRows) || !Array.isArray(guestRows)) return empty;
+    if (!loginRows.length || !guestRows.length) return empty;
+    if (!themes || typeof themes.classifyTheme !== 'function') return empty;
+
+    // Both sides go through the same dedup measure as `feedFocus` and the theme
+    // table, so the shares quoted here are the ones the panel already shows
+    // (2026-11-02: 搞笑整活 is 4.9% at home and 16.7% for the guest). A different
+    // denominator here would put two answers to one question on one screen.
+    const login = buildThemeStats(loginRows, themes, tagMap, themeMap);
+    const guest = buildThemeStats(guestRows, themes, tagMap, themeMap);
+    // Without a single classified video at home there is no share to rank against,
+    // so nothing can be said. A guest side with no classified video is different:
+    // every candidate then falls out as unclassified and the count stays true.
+    if (!(login.dedup.classified > 0)) return empty;
+
+    const unclassified = themes.UNCLASSIFIED ?? 'unclassified';
+
+    const loginBvids = new Set();
+    const loginUps = new Set();
+    for (const row of loginRows) {
+      if (typeof row?.bvid === 'string' && row.bvid !== '') loginBvids.add(row.bvid);
+      const key = uploaderKey(row);
+      if (key !== null) loginUps.add(key);
+    }
+
+    // One unit per distinct video, first guest row wins: the guest sample re-uses
+    // a much smaller pool (82 rows over 38 videos), and one video appearing five
+    // times must not look like five candidates. A row without a bvid cannot be
+    // linked to, so it is not a candidate.
+    const candidates = new Map();
+    for (const row of guestRows) {
+      const bvid = typeof row?.bvid === 'string' ? row.bvid : '';
+      if (bvid === '' || loginBvids.has(bvid)) continue;
+      if (!candidates.has(bvid)) candidates.set(bvid, row);
+    }
+
+    const scored = [];
+    let seq = 0;
+    for (const row of candidates.values()) {
+      const theme = themes.classifyTheme(row.title, row.tname, tagsOf(tagMap, row.bvid), themeMap);
+      // Unclassified is dropped from the picks but stays in `candidates`: the
+      // count answers "how many videos did the guest see that you did not", and
+      // that is true whether or not a theme could be named for each one. An
+      // unclassified row cannot explain why it was pushed, so it is not a pick.
+      if (theme === unclassified) continue;
+      const key = uploaderKey(row);
+      // Same quantity as amplification's loginShareDedup / guestShareDedup.
+      const loginShare = pct(login.dedup.counts.get(theme) ?? 0, login.dedup.classified);
+      const guestShare = pct(guest.dedup.counts.get(theme) ?? 0, guest.dedup.classified);
+      // Both shares are already rounded to 4 decimals, so their difference is a
+      // multiple of 1e-4; rounding once more only strips float noise such as
+      // 0.13890000000000001, which keeps `gap === guestShare - loginShare` exact
+      // enough for the front end to re-derive and for a test to compare.
+      const gap = Number((guestShare - loginShare).toFixed(4));
+      // Not suppressed: the guest baseline carries this theme no more than the
+      // home feed does, so recommending it would not open anything up. The row is
+      // dropped, which is why the list may be shorter than BREAKOUT_LIMIT.
+      if (gap <= 0) continue;
+      scored.push({
+        row,
+        theme,
+        upKey: key,
+        loginShare,
+        guestShare,
+        gap,
+        // An uploader identity that is missing cannot be matched against the
+        // home feed, so it is not evidence of having been shown there.
+        upSeen: key === null ? false : loginUps.has(key),
+        seq: seq++,
+      });
+    }
+
+    // Login share ascending: the theme the home feed carries least of is the one
+    // the user is least able to reach, which is what this block promises - an
+    // absolute exposure figure, not the relative gap. Equal home shares fall back
+    // to the larger gap (more genuinely held back), then to guest-row order so
+    // the list is stable between runs. `upSeen` stays a reported field, not a
+    // sort key: it describes one uploader, while the ranking is about themes.
+    scored.sort((a, b) => a.loginShare - b.loginShare || b.gap - a.gap || a.seq - b.seq);
+
+    const usedThemes = new Set();
+    const usedUps = new Set();
+    const items = [];
+    for (const cand of scored) {
+      if (items.length >= BREAKOUT_LIMIT) break;
+      if (usedThemes.has(cand.theme)) continue;
+      if (cand.upKey !== null && usedUps.has(cand.upKey)) continue;
+      usedThemes.add(cand.theme);
+      if (cand.upKey !== null) usedUps.add(cand.upKey);
+
+      const row = cand.row;
+      items.push({
+        bvid: row.bvid,
+        title: typeof row.title === 'string' && row.title !== '' ? row.title : null,
+        upName: typeof row.upName === 'string' && row.upName !== '' ? row.upName : null,
+        mid: row.mid === undefined ? null : row.mid,
+        url: `https://www.bilibili.com/video/${row.bvid}`,
+        theme: cand.theme,
+        themeName: themes.themeName(cand.theme),
+        loginShare: cand.loginShare,
+        guestShare: cand.guestShare,
+        // guestShare - loginShare, 4 decimals: a diagnostic, not the sort key -
+        // the ranking is loginShare ascending. Kept on every row so "why is this
+        // here at all" (gap > 0) can be audited from the JSON next to "how little
+        // you see it" (loginShare). The client does not read it yet.
+        gap: cand.gap,
+        upSeen: cand.upSeen,
+      });
+    }
+
+    return { candidates: candidates.size, items };
+  } catch {
+    return { candidates: 0, items: [] };
+  }
+}
+
+// ----------------------------------------------------------------------
 // Attribution
 // ----------------------------------------------------------------------
 
@@ -642,6 +807,24 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
       feedFocusError = String(err && err.message ? err.message : err);
     }
 
+    // Breakout picks: the guest-only videos whose themes the home feed barely
+    // carries. Another enhancement - an empty block, never a dark panel.
+    let breakout = { candidates: 0, items: [] };
+    let breakoutError = null;
+    try {
+      breakout = buildBreakout(db, {
+        date,
+        loginRows,
+        guestRows: expoRows.filter((r) => r.kind === 'guest'),
+        tagMap,
+        themeMap,
+        themes,
+      });
+    } catch (err) {
+      breakout = { candidates: 0, items: [] };
+      breakoutError = String(err && err.message ? err.message : err);
+    }
+
     let trend;
     let trendError = null;
     try {
@@ -669,11 +852,13 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
       amplification: amplification.slice(0, 6),
       headline,
       feedFocus,
+      breakout,
       attribution,
       advice,
       trend,
       ...(attributionError === null ? {} : { attributionError }),
       ...(feedFocusError === null ? {} : { feedFocusError }),
+      ...(breakoutError === null ? {} : { breakoutError }),
       ...(trendError === null ? {} : { trendError }),
     };
   } catch (err) {

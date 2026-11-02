@@ -510,6 +510,95 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // The breakout block sits at the very bottom, under the advice sentence, and
+    // says what it is: videos the guest sample saw that this home feed never did,
+    // ordered by how little their theme weighs at home. Not "for you" and not
+    // "you may be interested" - the panel cannot know that, and the honest claim
+    // is only ever "this reached a logged-out viewer and not you".
+    var BREAKOUT_SECTION = {
+      marginTop: '10px',
+      borderTop: '1px solid rgba(255,255,255,0.1)',
+      paddingTop: '8px',
+      fontSize: '12px',
+    }
+    var BREAKOUT_HEAD = { fontWeight: 600, marginBottom: '2px' }
+    var BREAKOUT_NOTE = Object.assign({}, DIM, { fontSize: '11px', marginBottom: '2px' })
+    var BREAKOUT_ITEM = { padding: '3px 0' }
+    var BREAKOUT_META = Object.assign({}, DIM, { marginTop: '1px' })
+
+    // One row: the title is the link, the line under it names the uploader, the
+    // theme and the theme's share of the home feed. Anything missing degrades to a
+    // phrase or disappears - never to the string 'undefined' or to NaN.
+    function breakoutItem(v, i) {
+      var item = v && typeof v === 'object' ? v : {}
+      var title = typeof item.title === 'string' && item.title !== '' ? item.title : '未知标题'
+      var upName = typeof item.upName === 'string' && item.upName !== '' ? item.upName : '未知 UP'
+      var themeName = typeof item.themeName === 'string' && item.themeName !== '' ? item.themeName : null
+      var share = num(item.loginShare)
+
+      var meta = upName
+      if (themeName !== null) meta += ' · ' + themeName
+      if (share !== null) meta += '（你首页 ' + pct(share) + '）'
+
+      // url is what the host sent; a summary without it still gets a link because
+      // the bvid is enough to build one. No url and no bvid renders plain text.
+      var url = typeof item.url === 'string' && item.url ? item.url : null
+      if (url === null && typeof item.bvid === 'string' && item.bvid) {
+        url = 'https://www.bilibili.com/video/' + item.bvid
+      }
+
+      var label = String(i + 1) + '. ' + title
+      var key = typeof item.bvid === 'string' && item.bvid ? item.bvid : 'pick' + i
+
+      return h(
+        'div',
+        { key: key, style: BREAKOUT_ITEM },
+        url
+          ? h(
+              'a',
+              {
+                href: url,
+                target: '_blank',
+                rel: 'noopener noreferrer',
+                onClick: function (e) {
+                  e.stopPropagation()
+                },
+                style: LINK_STYLE,
+              },
+              label,
+            )
+          : h('div', { style: LINK_STYLE }, label),
+        h('div', { style: BREAKOUT_META }, meta),
+      )
+    }
+
+    // Nothing at all when the summary has no block, no items, or a malformed one:
+    // an old host and an empty guest sample must both leave the panel as it was.
+    function breakoutBlock(breakout) {
+      if (!breakout || typeof breakout !== 'object') return null
+      var items = Array.isArray(breakout.items) ? breakout.items : []
+      if (!items.length) return null
+
+      // The count is the honest headline: "37 of these existed, here are the 5
+      // worst-served ones". Without it the list reads as if it were the whole set,
+      // so a missing count drops the number instead of inventing one.
+      var candidates = num(breakout.candidates)
+      var note =
+        candidates !== null && candidates > 0
+          ? '游客看到、你首页没有的 ' + candidates + ' 条里，这几条被压得最狠：'
+          : '游客看得到、你首页没有的视频里，这几条被压得最狠：'
+
+      return h(
+        'div',
+        { style: BREAKOUT_SECTION },
+        h('div', { style: BREAKOUT_HEAD }, '破茧推荐'),
+        h('div', { style: BREAKOUT_NOTE }, note),
+        items.map(function (v, i) {
+          return breakoutItem(v, i)
+        }),
+      )
+    }
+
     // The meta line under the title. The guest sample is resampled from a far
     // smaller pool than the login feed (2026-11-02: 82 rows over 38 videos), so
     // two bare row counts advertise a symmetry the samples do not have. When the
@@ -632,6 +721,7 @@ window.__ModuleLoader__.load({
           h('div', { style: Object.assign({}, DIM, { marginTop: '4px' }) },
             '顺序按「推给你 − 路人」排；覆盖率 ' + (loginCoverage === null ? '-' : pct(loginCoverage)) + '，未分类不计入比值。'),
         ),
+        breakoutBlock(data.breakout),
       )
     }
 
