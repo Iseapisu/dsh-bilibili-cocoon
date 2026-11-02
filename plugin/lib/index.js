@@ -92,6 +92,24 @@ function loadTagMap(db) {
 
 const tagsOf = (tagMap, bvid) => (tagMap ? tagMap.get(bvid) : undefined);
 
+// Reads the per-tag theme verdicts once per request: Map<lowercased tag, theme
+// id>. Same degradation rule as loadTagMap - an older database without the
+// tag_theme table yields an empty map, and classifyTheme then falls back to the
+// lexicon, i.e. exactly the pre-table behaviour. Never throws.
+function loadTagThemeMap(db) {
+  const themeMap = new Map();
+  try {
+    for (const row of db.prepare('SELECT tag, theme FROM tag_theme').all()) {
+      if (typeof row?.tag !== 'string' || row.tag === '') continue;
+      if (typeof row?.theme !== 'string' || row.theme === '') continue;
+      themeMap.set(row.tag.trim().toLowerCase(), row.theme);
+    }
+  } catch {
+    // Missing table / unreadable column: let the lexicon answer.
+  }
+  return themeMap;
+}
+
 // Snapshot row -> cocoonScore item, with tag evidence joined in from video_tag.
 // video_tag is keyed by bvid rather than by date, so one map serves every trend
 // day. A bvid without a row gets an empty list, i.e. the pre-tag verdicts.
@@ -112,11 +130,11 @@ function topThemes(counts, total, themeName, limit = 5) {
 // Theme stats
 // ----------------------------------------------------------------------
 
-function buildThemeStats(rows, themes, tagMap) {
+function buildThemeStats(rows, themes, tagMap, themeMap) {
   const counts = new Map();
   const verdicts = [];
   for (const r of rows) {
-    const id = themes.classifyTheme(r.title, r.tname, tagsOf(tagMap, r.bvid));
+    const id = themes.classifyTheme(r.title, r.tname, tagsOf(tagMap, r.bvid), themeMap);
     counts.set(id, (counts.get(id) ?? 0) + 1);
     verdicts.push({ bvid: r.bvid, id });
   }
@@ -165,10 +183,10 @@ function buildThemeStats(rows, themes, tagMap) {
 // Amplification
 // ----------------------------------------------------------------------
 
-function buildAmplification(expoRows, history, themes, tagMap) {
+function buildAmplification(expoRows, history, themes, tagMap, themeMap) {
   const loginRows = expoRows.filter((r) => r.kind === 'login');
-  const login = buildThemeStats(loginRows, themes, tagMap);
-  const guest = buildThemeStats(expoRows.filter((r) => r.kind === 'guest'), themes, tagMap);
+  const login = buildThemeStats(loginRows, themes, tagMap, themeMap);
+  const guest = buildThemeStats(expoRows.filter((r) => r.kind === 'guest'), themes, tagMap, themeMap);
 
   const historyShares = new Map(
     [...history.counts.entries()].map(([id, n]) => [id, pct(n, history.classified)]),
@@ -304,14 +322,14 @@ function repeatRateOf(repeats, appearances) {
   return appearances > 0 ? Number((repeats / appearances).toFixed(2)) : 0;
 }
 
-function buildAttribution(themes, amplification, loginRows, tagMap) {
+function buildAttribution(themes, amplification, loginRows, tagMap, themeMap) {
   const targets = amplification
     .filter((a) => a.ratio !== null && a.ratio > ATTRIBUTION_RATIO)
     .slice(0, ATTRIBUTION_LIMIT);
 
   return targets.map((a) => {
     const rows = loginRows.filter(
-      (r) => themes.classifyTheme(r.title, r.tname, tagsOf(tagMap, r.bvid)) === a.id,
+      (r) => themes.classifyTheme(r.title, r.tname, tagsOf(tagMap, r.bvid), themeMap) === a.id,
     );
     const videos = new Map();
     const uploaders = new Map();
@@ -433,7 +451,7 @@ const oneDecimal = (n) => (Number.isFinite(n) ? Number(Number(n).toFixed(1)) : n
 
 // One day of trend data. Each metric degrades to null on its own so a single
 // bad day (or a throwing call) never removes the point from the line.
-function trendPoint(db, date, themes, cocoon, tagMap) {
+function trendPoint(db, date, themes, cocoon, tagMap, themeMap) {
   // `basis` says which sample the cocoon number came from ('history' once the day
   // has at least 10 history rows, otherwise 'feed'). The number is meaningless
   // without it: the same formula scores the history sample and the home feed
@@ -493,8 +511,8 @@ function trendPoint(db, date, themes, cocoon, tagMap) {
 
   if (expoRows.length) {
     try {
-      const history = buildThemeStats(snap.history, themes, tagMap);
-      const { head } = buildAmplification(expoRows, history, themes, tagMap);
+      const history = buildThemeStats(snap.history, themes, tagMap, themeMap);
+      const { head } = buildAmplification(expoRows, history, themes, tagMap, themeMap);
       point.amplification = head && Number.isFinite(head.ratio) ? head.ratio : null;
     } catch {
       point.amplification = null;
@@ -503,7 +521,7 @@ function trendPoint(db, date, themes, cocoon, tagMap) {
     try {
       const ids = new Set();
       for (const row of loginRows) {
-        const id = themes.classifyTheme(row.title, row.tname, tagsOf(tagMap, row.bvid));
+        const id = themes.classifyTheme(row.title, row.tname, tagsOf(tagMap, row.bvid), themeMap);
         if (id !== themes.UNCLASSIFIED) ids.add(id);
       }
       point.themes = loginRows.length ? ids.size : null;
@@ -518,7 +536,7 @@ function trendPoint(db, date, themes, cocoon, tagMap) {
   return point;
 }
 
-function buildTrend(db, latestDate, themes, cocoon, tagMap) {
+function buildTrend(db, latestDate, themes, cocoon, tagMap, themeMap) {
   const since = shiftDate(latestDate, -(TREND_DAYS - 1));
   const dates = new Set();
   for (const table of ['snapshot', 'exposure']) {
@@ -532,7 +550,7 @@ function buildTrend(db, latestDate, themes, cocoon, tagMap) {
     }
   }
 
-  const points = [...dates].sort().map((date) => trendPoint(db, date, themes, cocoon, tagMap));
+  const points = [...dates].sort().map((date) => trendPoint(db, date, themes, cocoon, tagMap, themeMap));
   return { days: TREND_DAYS, covered: points.length, points };
 }
 
@@ -569,6 +587,7 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
 
   try {
     const tagMap = loadTagMap(db);
+    const themeMap = loadTagThemeMap(db);
 
     const dates = db
       .prepare("SELECT DISTINCT date FROM exposure ORDER BY date DESC LIMIT 30")
@@ -586,19 +605,20 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
       .prepare("SELECT bvid, title, tname, upName FROM snapshot WHERE date = ? AND source = 'history'")
       .all(date);
 
-    const history = buildThemeStats(historyRows, themes, tagMap);
+    const history = buildThemeStats(historyRows, themes, tagMap, themeMap);
     const { loginRows, login, guest, amplification, head } = buildAmplification(
       expoRows,
       history,
       themes,
       tagMap,
+      themeMap,
     );
 
     let attribution = [];
     let advice = null;
     let attributionError = null;
     try {
-      attribution = buildAttribution(themes, amplification, loginRows, tagMap);
+      attribution = buildAttribution(themes, amplification, loginRows, tagMap, themeMap);
       advice = buildAdvice(attribution, head?.id);
     } catch (err) {
       // Attribution is an enhancement; a failure here must not hide the panel.
@@ -631,7 +651,7 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
         .prepare('SELECT MAX(date) AS d FROM (SELECT date FROM snapshot UNION ALL SELECT date FROM exposure)')
         .get()?.d;
       const latestDate = typeof latest === 'string' && latest > date ? latest : date;
-      trend = buildTrend(db, latestDate, themes, cocoon, tagMap);
+      trend = buildTrend(db, latestDate, themes, cocoon, tagMap, themeMap);
     } catch (err) {
       // Trend is an enhancement; a failure here must not hide the panel.
       trend = { days: TREND_DAYS, covered: 0, points: [] };

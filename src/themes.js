@@ -116,6 +116,13 @@ export const THEMES = [
 // ---
 // Tag vocabulary: the third (and last) evidence level, keyed by theme id.
 //
+// This is now a *seed and fallback*, not the source of truth. Per-tag verdicts
+// live in the tag_theme table (src/store.js): one tag is judged once and stays
+// valid forever, while videos arrive by the hundred every day, so the table is
+// what absorbs new tags without a code change. The vocabulary below still runs
+// for every tag the table does not own yet, which is why it has to stay
+// byte-identical: it also produced every verdict the table was seeded from.
+//
 // Separate from THEMES[].keywords on purpose. Title keywords are tuned for
 // written titles and stay frozen for comparability; tags are a different
 // language (shorter, lowercase, some of them pure platform noise), so they get
@@ -232,10 +239,81 @@ for (const theme of THEMES) {
   for (const region of theme.regions) REGION_TO_THEME.set(region, theme.id);
 }
 
+// ---
+// Single-tag resolution: the unit of classification is a tag, not a video.
+//
+// 2.5k tags need one verdict each and stay valid forever; videos are turnover.
+// So the pipeline is: tag_theme table first (permanent verdicts), then the
+// lexicon (free fast path), then the unresolved queue (tools/classify-tags.mjs),
+// and only then a human or an LLM. This round only wires the first two plus the
+// queue.
+// ---
+
+// A themeMap value is either a bare theme id (host-side Map<tag, theme>) or the
+// store's { theme, source, confidence } entry. Accepting both keeps the callers
+// from having to remember which one a given helper returns.
+function themeOfEntry(value) {
+  if (typeof value === 'string') return value;
+  return typeof value?.theme === 'string' ? value.theme : null;
+}
+
+const cleanTagOf = (tag) => String(tag ?? '').trim().toLowerCase();
+
+// True for tags that name the platform or a campaign rather than a subject.
+// Exported so tools/classify-tags.mjs can tell "no theme by policy" from "no
+// theme yet" and keep the review queue free of permanent noise like 'vlog'.
+export function isNoiseTag(tag) {
+  const clean = cleanTagOf(tag);
+  if (!clean) return false;
+  return NOISE_TAGS.has(clean) || ACTIVITY_TAG.test(clean);
+}
+
+// Every theme the lexicon credits for one tag, in THEMES order (usually 0 or 1,
+// occasionally several for composite tags such as 'ai音乐'). Exported because
+// the offline filler has to tell an unambiguous tag (exactly one theme: safe to
+// freeze in the table) from an ambiguous one (several: needs a decider, so it
+// goes to the queue instead of being guessed).
+export function lexiconThemesOf(tag) {
+  const clean = cleanTagOf(tag);
+  if (!clean || isNoiseTag(clean)) return [];
+
+  const out = [];
+  for (const theme of THEMES) {
+    const matchers = TAG_MATCHERS.get(theme.id);
+    if (matchers && matchers.some((matches) => matches(clean))) out.push(theme.id);
+  }
+  return out;
+}
+
+// One tag -> one theme id, or null when no evidence resolves it. The table wins
+// over the lexicon, so a manual/llm correction takes effect without touching
+// this file. Noise and campaign tags resolve to null by policy, whether or not
+// someone wrote a row for them: they name the platform, not a subject.
+export function resolveTagTheme(tag, themeMap) {
+  const clean = cleanTagOf(tag);
+  if (!clean || isNoiseTag(clean)) return null;
+
+  const stored = themeOfEntry(themeMap?.get?.(clean));
+  if (stored && THEME_BY_ID.has(stored)) return stored;
+
+  const byLexicon = lexiconThemesOf(clean);
+  return byLexicon.length ? byLexicon[0] : null;
+}
+
 // Tag-only verdict: lowercase, drop noise, then score each theme by how many
 // distinct tags it can explain. Ties keep the THEMES order, exactly like the
 // title pass. Returns UNCLASSIFIED when nothing survives.
-function classifyByTags(tags) {
+//
+// Two evidence sources feed the same vote:
+//   - tag_theme (`themeMap`) - authoritative for the tags it owns. Keys are the
+//     lowercased tag; values may be a theme id or the store's
+//     { theme, source, confidence } entry. A tag it owns casts exactly one vote.
+//   - TAG_KEYWORDS - the seed/fallback for tags it does not own. A composite tag
+//     can be credited to more than one theme here ('ai音乐' holds both an `ai`
+//     and a `music` keyword), and that multiplicity is part of the frozen
+//     scoring every published figure was measured under, so it is reproduced
+//     verbatim rather than collapsed to a single theme.
+function classifyByTags(tags, themeMap) {
   if (!Array.isArray(tags) || tags.length === 0) return UNCLASSIFIED;
 
   const cleaned = [];
@@ -243,20 +321,24 @@ function classifyByTags(tags) {
     if (typeof raw !== 'string') continue;
     const tag = raw.trim().toLowerCase();
     if (!tag) continue;
+    // Noise and campaign tags carry no subject matter; the check runs before the
+    // table is consulted so a stray manual row can never turn 'vlog' into a theme.
     if (NOISE_TAGS.has(tag) || ACTIVITY_TAG.test(tag)) continue;
     cleaned.push(tag);
   }
   if (!cleaned.length) return UNCLASSIFIED;
 
+  const scores = new Map();
+  for (const tag of cleaned) {
+    const stored = themeOfEntry(themeMap?.get?.(tag));
+    const ids = stored && THEME_BY_ID.has(stored) ? [stored] : lexiconThemesOf(tag);
+    for (const id of ids) scores.set(id, (scores.get(id) ?? 0) + 1);
+  }
+
   let bestId = UNCLASSIFIED;
   let bestScore = 0;
   for (const theme of THEMES) {
-    const matchers = TAG_MATCHERS.get(theme.id);
-    if (!matchers) continue;
-    let score = 0;
-    for (const tag of cleaned) {
-      if (matchers.some((matches) => matches(tag))) score += 1;
-    }
+    const score = scores.get(theme.id) ?? 0;
     if (score > bestScore) {
       bestScore = score;
       bestId = theme.id;
@@ -280,7 +362,12 @@ function classifyByTags(tags) {
 // The order costs nothing: a tag verdict can only rescue a row the region
 // already failed on, so coverage is identical either way. The only difference is
 // whether 26 past verdicts get rewritten.
-export function classifyTheme(title, tname, tags) {
+//
+// `themeMap` is optional and fourth on purpose: omitting it reproduces the
+// pre-table verdicts byte for byte, which is what every stored figure was
+// measured under. Pass loadTagThemeMap(db) / listTagThemes(store) to let the
+// table's per-tag verdicts stand in for the lexicon.
+export function classifyTheme(title, tname, tags, themeMap) {
   const text = String(title ?? '');
   if (text) {
     let bestId = UNCLASSIFIED;
@@ -302,7 +389,7 @@ export function classifyTheme(title, tname, tags) {
     const byRegion = REGION_TO_THEME.get(region);
     if (byRegion) return byRegion;
   }
-  return classifyByTags(tags);
+  return classifyByTags(tags, themeMap);
 }
 
 export function themeName(id) {

@@ -1,5 +1,6 @@
-// SQLite persistence: daily snapshots, multi-round exposure samples, and the
-// per-video tag backfill table.
+// SQLite persistence: daily snapshots, multi-round exposure samples, the
+// per-video tag backfill table, and the per-tag theme verdicts that replaced
+// the hardcoded tag lexicon.
 
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
@@ -44,6 +45,37 @@ CREATE TABLE IF NOT EXISTS video_tag(
   attempts INTEGER NOT NULL DEFAULT 1,
   last_error TEXT
 );
+
+-- tag -> 主题的归类结果，一张 tag 一张票，判定一次永久复用。
+-- 动机：B站 tag 是有限的（实测 2.5k 个），视频是流水的（每天几百条）。
+-- 把判定结果从 src/themes.js 的词根表搬到这里，新 tag 只需增量处理，
+-- 词根表退化成「种子 + 兜底」，不必再跟着 B站改一次词表就发一次版。
+--
+-- tag 统一小写保存（写入前 trim + lowercase），而不是保留原大小写：
+-- 分类器匹配 tag 时一律小写化，保留原始拼写会让 ComfyUI / comfyui 变成
+-- 两条主键，同一个概念被判定两次，结论还会取决于哪个拼写先入库。
+-- 因此这一列同时是「匹配键」，读取方用小写 tag 直接查即可。
+-- source: 'lexicon'（规则自动填）| 'manual'（人工）| 'llm'（预留）。
+-- 权限顺序 lexicon < llm < manual：词表跑批永远覆盖不了人工/LLM 的结论。
+CREATE TABLE IF NOT EXISTS tag_theme(
+  tag        TEXT PRIMARY KEY,
+  theme      TEXT NOT NULL,
+  source     TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 1.0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- 规则判不出的 tag（以及规则给出多个主题的歧义 tag）在这里排队，等 LLM
+-- 批量处理或人工填。seen_count 是「这个 tag 出现在多少个视频里」，用来排序
+-- 决定先处理谁；attempts 留给将来的 LLM 重试计数，这一轮不写。
+CREATE TABLE IF NOT EXISTS tag_unresolved(
+  tag        TEXT PRIMARY KEY,
+  seen_count INTEGER NOT NULL DEFAULT 1,
+  first_seen INTEGER NOT NULL,
+  last_seen  INTEGER NOT NULL,
+  attempts   INTEGER NOT NULL DEFAULT 0
+);
 `;
 
 const VIDEO_TAG_COLUMNS = 'bvid, tags, tag_ids, fetched_at, attempts, last_error';
@@ -64,6 +96,38 @@ ON CONFLICT(bvid) DO UPDATE SET
 `;
 
 const COLUMNS = 'date, source, bvid, tid, tname, mid, upName, title, rcmdReason, tags, view, pubdate';
+
+const TAG_THEME_COLUMNS = 'tag, theme, source, confidence';
+const UNRESOLVED_COLUMNS = 'tag, seen_count, first_seen, last_seen, attempts';
+
+// Authority ranking for the tag_theme upsert guard: a lexicon batch must never
+// overwrite a manual or llm verdict, while a manual write always wins. Unknown
+// sources rank as lexicon (0), so a typo degrades instead of taking the table.
+const SOURCE_RANK = (column) =>
+  `(CASE ${column} WHEN 'manual' THEN 2 WHEN 'llm' THEN 1 ELSE 0 END)`;
+
+const UPSERT_TAG_THEME_SQL = `
+INSERT INTO tag_theme(tag, theme, source, confidence, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(tag) DO UPDATE SET
+  theme = excluded.theme,
+  source = excluded.source,
+  confidence = excluded.confidence,
+  updated_at = excluded.updated_at
+WHERE ${SOURCE_RANK('tag_theme.source')} <= ${SOURCE_RANK('excluded.source')}
+`;
+
+// seen_count grows by the caller's weight (one video, unless stated otherwise);
+// first_seen is only written on insert, last_seen always moves.
+const UPSERT_UNRESOLVED_SQL = `
+INSERT INTO tag_unresolved(tag, seen_count, first_seen, last_seen, attempts)
+VALUES (?, ?, ?, ?, 0)
+ON CONFLICT(tag) DO UPDATE SET
+  seen_count = tag_unresolved.seen_count + excluded.seen_count,
+  last_seen = excluded.last_seen
+`;
+
+const TAG_SOURCES = new Set(['lexicon', 'manual', 'llm']);
 
 const INSERT_SQL = `
 INSERT OR REPLACE INTO snapshot
@@ -141,6 +205,15 @@ function tagPairs(tags, tagIds) {
   }
   pairs.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   return pairs;
+}
+
+// tag_theme / tag_unresolved key their rows on the matching form of a tag:
+// trimmed and lowercased. See the schema comment for why the original casing is
+// deliberately not preserved.
+function normalizeTag(value) {
+  if (value === null || value === undefined) return null;
+  const tag = String(value).trim().toLowerCase();
+  return tag.length ? tag : null;
 }
 
 function normalizeDate(date) {
@@ -223,6 +296,18 @@ export function openStore(path = DEFAULT_DB_PATH) {
       count: db.prepare('SELECT COUNT(*) AS n FROM snapshot'),
       upsertVideoTag: db.prepare(UPSERT_VIDEO_TAG_SQL),
       getVideoTag: db.prepare(`SELECT ${VIDEO_TAG_COLUMNS} FROM video_tag WHERE bvid = ?`),
+      upsertTagTheme: db.prepare(UPSERT_TAG_THEME_SQL),
+      listTagTheme: db.prepare(`SELECT ${TAG_THEME_COLUMNS} FROM tag_theme ORDER BY tag ASC`),
+      upsertUnresolved: db.prepare(UPSERT_UNRESOLVED_SQL),
+      listUnresolved: db.prepare(
+        `SELECT ${UNRESOLVED_COLUMNS} FROM tag_unresolved
+         ORDER BY seen_count DESC, tag ASC LIMIT ?`,
+      ),
+      countTagThemes: db.prepare('SELECT COUNT(*) AS n FROM tag_theme'),
+      countTagThemesBySource: db.prepare(
+        'SELECT source, COUNT(*) AS n FROM tag_theme GROUP BY source ORDER BY source ASC',
+      ),
+      countUnresolved: db.prepare('SELECT COUNT(*) AS n FROM tag_unresolved'),
     },
   };
   return store;
@@ -487,6 +572,118 @@ export function countVideoTags(store) {
   return { total: n(row?.total), ok: n(row?.ok), failed: n(row?.failed), empty: n(row?.empty) };
 }
 
+// ----------------------------------------------------------------------
+// tag_theme: per-tag subject verdicts, the durable replacement for the
+// hardcoded lexicon. One row per tag, written once, reused forever.
+// ----------------------------------------------------------------------
+
+// Batch upsert of { tag, theme, source?, confidence? } entries. Invalid entries
+// (blank tag or theme, non-string tag) are skipped instead of aborting the
+// batch: one bad row from a script must not cost the other 2.5k verdicts.
+// Returns { written, skipped, blocked }; `blocked` counts rows the authority
+// guard refused to overwrite, i.e. a lexicon pass running over manual verdicts.
+export function saveTagThemes(store, entries) {
+  assertOpen(store);
+  const list = Array.isArray(entries) ? entries : [];
+  const out = { written: 0, skipped: 0, blocked: 0 };
+
+  const now = Date.now();
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') {
+      out.skipped += 1;
+      continue;
+    }
+    const tag = normalizeTag(entry.tag);
+    const theme = toText(entry.theme);
+    if (!tag || !theme) {
+      out.skipped += 1;
+      continue;
+    }
+    const rawSource = String(entry.source ?? 'lexicon').trim().toLowerCase();
+    const source = TAG_SOURCES.has(rawSource) ? rawSource : 'lexicon';
+    const confident = Number(entry.confidence);
+    const confidence = Number.isFinite(confident) ? Math.min(1, Math.max(0, confident)) : 1;
+
+    const result = store.stmt.upsertTagTheme.run(tag, theme, source, confidence, now, now);
+    if (Number(result?.changes) > 0) out.written += 1;
+    else out.blocked += 1;
+  }
+  return out;
+}
+
+// Whole table as Map<tag, { theme, source, confidence }>, keys lowercased. The
+// classification layer accepts either this shape or a plain Map<tag, themeId>.
+export function listTagThemes(store) {
+  assertOpen(store);
+  const map = new Map();
+  const rows = store.stmt.listTagTheme.all();
+  for (const row of rows) {
+    const tag = normalizeTag(row.tag);
+    if (!tag) continue;
+    map.set(tag, {
+      theme: row.theme,
+      source: row.source,
+      confidence: row.confidence === null || row.confidence === undefined ? 1 : Number(row.confidence),
+    });
+  }
+  return map;
+}
+
+// Queue tags the rules could not decide. Accepts plain strings (one sighting
+// each) or { tag, count } so a bulk pass can seed seen_count with the real
+// number of videos the tag appears in. seen_count accumulates on conflict.
+export function saveUnresolvedTags(store, tags) {
+  assertOpen(store);
+  const list = Array.isArray(tags) ? tags : [];
+  const out = { written: 0, skipped: 0 };
+
+  const now = Date.now();
+  for (const entry of list) {
+    const raw = entry && typeof entry === 'object' ? entry.tag : entry;
+    const tag = normalizeTag(raw);
+    if (!tag) {
+      out.skipped += 1;
+      continue;
+    }
+    const weightRaw = entry && typeof entry === 'object' ? entry.count : 1;
+    const weight = Number(weightRaw);
+    const count = Number.isFinite(weight) && weight > 0 ? Math.max(1, Math.trunc(weight)) : 1;
+    store.stmt.upsertUnresolved.run(tag, count, now, now);
+    out.written += 1;
+  }
+  return out;
+}
+
+// Pending queue, most-seen first. `limit` <= 0 / non-finite means everything.
+export function listUnresolvedTags(store, limit = null) {
+  assertOpen(store);
+  const raw = Number(limit);
+  const n = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : -1;
+  return store.stmt.listUnresolved.all(n).map((row) => ({
+    tag: row.tag,
+    seenCount: row.seen_count === null || row.seen_count === undefined ? 0 : Number(row.seen_count),
+    firstSeen: row.first_seen ?? null,
+    lastSeen: row.last_seen ?? null,
+    attempts: row.attempts === null || row.attempts === undefined ? 0 : Number(row.attempts),
+  }));
+}
+
+// Coverage bookkeeping for the filler script: how many tags carry a verdict,
+// split by which writer produced it, plus the size of the pending queue.
+export function countTagThemes(store) {
+  assertOpen(store);
+  const n = (v) => (v === null || v === undefined ? 0 : Number(v));
+  const bySource = {};
+  for (const row of store.stmt.countTagThemesBySource.all()) {
+    bySource[row.source] = n(row.n);
+  }
+  return {
+    total: n(store.stmt.countTagThemes.get()?.n),
+    bySource,
+    unresolved: n(store.stmt.countUnresolved.get()?.n),
+  };
+}
+
 export function closeStore(store) {
   if (!store) return;
   if (typeof store.close === 'function' && !store.db) {
@@ -510,6 +707,11 @@ export default {
   saveVideoTags,
   listVideoTags,
   countVideoTags,
+  saveTagThemes,
+  listTagThemes,
+  saveUnresolvedTags,
+  listUnresolvedTags,
+  countTagThemes,
   closeStore,
   DEFAULT_DB_PATH,
   SOURCES,

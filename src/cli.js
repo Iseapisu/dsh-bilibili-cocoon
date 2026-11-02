@@ -441,9 +441,11 @@ async function computeScore(flags) {
   const store = storeMod.openStore(dbPath);
   let snapshot;
   let tagMap = new Map();
+  let themeMap = new Map();
   try {
     snapshot = storeMod.listSnapshots(store, days);
     if (typeof storeMod.listVideoTags === 'function') tagMap = storeMod.listVideoTags(store);
+    if (typeof storeMod.listTagThemes === 'function') themeMap = storeMod.listTagThemes(store);
   } finally {
     storeMod.closeStore(store);
   }
@@ -506,7 +508,7 @@ async function computeScore(flags) {
   try {
     result = await metrics.cocoonScore(
       { feed: feedItems, history: historyItems, ranking: rankingItems, date: latest },
-      { date: latest },
+      { date: latest, themeMap },
     );
   } catch (err) {
     throw new CliError(`cocoonScore 执行失败：${describeError(err)}`, 1, '数据可能不完整，先确认快照内容');
@@ -739,10 +741,12 @@ async function cmdExposure(flags) {
 
   const store = storeMod.openStore(dbPath);
   let tagMap = new Map();
+  let themeMap = new Map();
   try {
     for (const s of shots.login) storeMod.saveExposure(store, date, 'login', s.round, s.items);
     for (const s of shots.guest) storeMod.saveExposure(store, date, 'guest', s.round, s.items);
     if (typeof storeMod.listVideoTags === 'function') tagMap = storeMod.listVideoTags(store);
+    if (typeof storeMod.listTagThemes === 'function') themeMap = storeMod.listTagThemes(store);
   } finally {
     storeMod.closeStore(store);
   }
@@ -758,7 +762,7 @@ async function cmdExposure(flags) {
     guest: shots.guest.map(withTags),
   };
 
-  printExposure(exposureMod.summarizeExposure(tagged), date);
+  printExposure(exposureMod.summarizeExposure({ ...tagged, themeMap }), date);
 }
 
 function printExposure(summary, date) {

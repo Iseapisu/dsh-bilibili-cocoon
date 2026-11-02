@@ -114,8 +114,10 @@ export function uploaderCounts(items) {
 // Theme evidence is title > region > tags. `tags` is optional on the item shape:
 // callers that cannot supply it (or an older library without a video_tag table)
 // get exactly the pre-tag verdicts, because classifyTheme ignores a missing list.
-export function themeCounts(items) {
-  return tally((items ?? []).map((it) => classifyTheme(it?.title, it?.tname, it?.tags)));
+// `themeMap` is the tag->theme table (Map from store.listTagThemes or the host's
+// loadTagThemeMap); omitting it keeps the pure-lexicon verdicts.
+export function themeCounts(items, themeMap) {
+  return tally((items ?? []).map((it) => classifyTheme(it?.title, it?.tname, it?.tags, themeMap)));
 }
 
 export function reasonMix(items) {
@@ -167,11 +169,12 @@ function bootstrapEntropyCI(cats, seed, reps = 400) {
 }
 
 /**
- * @param {{feed?: any[], history?: any[], ranking?: any[], date?: string}} input
+ * @param {{feed?: any[], history?: any[], ranking?: any[], date?: string, themeMap?: Map}} input
  *   Each item may carry an optional `tags: string[]`; it is passed to
  *   classifyTheme as the third (last-resort) evidence level. Omitting it
- *   reproduces the pre-tag theme verdicts byte for byte.
- * @param {{date?: string}} [options]
+ *   reproduces the pre-tag theme verdicts byte for byte. `themeMap` (optional)
+ *   is the tag_theme table and only changes how tag evidence is read.
+ * @param {{date?: string, themeMap?: Map}} [options]
  */
 // ----------------------------------------------------------------------
 // Main entry
@@ -195,6 +198,9 @@ export function cocoonScore(input = {}, options = {}) {
   const history = input.history ?? [];
   const ranking = input.ranking ?? [];
   const date = options.date ?? input.date ?? new Date().toISOString().slice(0, 10);
+  // Tag verdicts may arrive on either object; both default to "no table", which
+  // is the pre-table behaviour.
+  const themeMap = options.themeMap ?? input.themeMap;
 
   const basis = history.length >= 10 ? 'history' : 'feed';
   const sample = basis === 'history' ? history : feed;
@@ -218,7 +224,7 @@ export function cocoonScore(input = {}, options = {}) {
   const cats = categoryCounts(sample);
   const ups = uploaderCounts(sample);
 
-  const themeRaw = themeCounts(sample);
+  const themeRaw = themeCounts(sample, themeMap);
   const themeUnclassified = themeRaw.get(UNCLASSIFIED) ?? 0;
   const themeClassified = sample.length - themeUnclassified;
   const classifiedThemes = new Map([...themeRaw].filter(([id]) => id !== UNCLASSIFIED));

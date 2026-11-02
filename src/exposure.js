@@ -108,7 +108,7 @@ function dedupIndexes(items) {
   return keep;
 }
 
-export function summarizeExposure({ login, guest }) {
+export function summarizeExposure({ login, guest, themeMap }) {
   const flat = (shots) => shots.flatMap((s) => s.items);
   const L = flat(login);
   const G = flat(guest);
@@ -118,10 +118,11 @@ export function summarizeExposure({ login, guest }) {
   // loop). The caller attaches `item.tags` from the video_tag table before
   // calling this function; when it doesn't, the third argument is undefined and
   // classifyTheme falls back to title + region, i.e. the pre-tag verdicts.
+  // `themeMap` (optional) is the tag_theme table; without it the lexicon decides.
   const build = (items, shots) => {
     // Classify once, then derive both measures from the same verdicts: the row
     // measure and the dedup measure can never disagree about what a row is.
-    const verdicts = items.map((it) => classifyTheme(it.title, it.tname, it.tags));
+    const verdicts = items.map((it) => classifyTheme(it.title, it.tname, it.tags, themeMap));
     const themes = distOf(verdicts, (id) => id);
     const cats = distOf(items, (it) => parentOf(it.tname));
     const ups = distOf(items, (it) => it.upName ?? '(未知)');
