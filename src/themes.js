@@ -1,4 +1,5 @@
-// Theme classification: title keywords first, second-level category fallback.
+// Theme classification: title keywords, second-level category fallback, and
+// real video tags as a last-resort rescue for rows nothing else can read.
 // Feeds the theme-concentration diagnostic, which is separate from category entropy.
 
 const notLetter = (w) => new RegExp(`(?<![A-Za-z])${w}(?![A-Za-z])`, 'i');
@@ -112,6 +113,112 @@ export const THEMES = [
   },
 ];
 
+// ---
+// Tag vocabulary: the third (and last) evidence level, keyed by theme id.
+//
+// Separate from THEMES[].keywords on purpose. Title keywords are tuned for
+// written titles and stay frozen for comparability; tags are a different
+// language (shorter, lowercase, some of them pure platform noise), so they get
+// their own table that can be widened without touching a single past verdict.
+//
+// Every entry is lowercase because tag matching lowercases both sides: real
+// tags come back as `comfyui` / `ComfyUi` / `deepseek`, while the title table
+// spells them `ComfyUI` / `DeepSeek`, and the case-sensitive includes() used for
+// titles silently misses the lowercase spelling.
+//
+// Assignments worth calling out:
+// - 时政/地缘 tags (中东局势, 伊朗, 伊以局势, 胡塞, 亚洲局势, 也门, 沙特,
+//   巴基斯坦, 欧洲局势, 地缘博弈) go to `knowledge`, not `life`. The existing
+//   knowledge table already owns 战争/军事/历史/经济学/社会学, i.e. "explain how
+//   the world works", and every one of these tags names a geopolitical topic.
+//   Their region is almost always 日常/生活 (the uploader's own bucket), which is
+//   precisely the coarse-and-wrong case this layer exists to catch. `life` would
+//   only re-state the region we already had.
+// - AI-ish tooling tags (comfyui, deepseek, qwen, qwenimage, seedance, minimax,
+//   aivideo) go to `ai`, not `tech`: `tech` is hardware / DIY / 科工机械 (显卡,
+//   装机, 火箭), while model, prompt and generation-workflow tags are the
+//   `ai` theme's own subject matter.
+// ---
+export const TAG_KEYWORDS = new Map([
+  ['ai', [
+    'ai', 'aigc', '人工智能', '大模型', '生成式', '智能体', '提示词', '工作流',
+    '数据集', 'ai绘画', 'ai视频', 'ai音乐', 'ai翻唱', 'ai短剧', 'ai生成',
+    'ai创作', 'ai形象', 'ai剧情', 'aimv', 'comfyui', 'deepseek', 'qwen',
+    'qwenimage', 'seedance', 'minimax', 'aivideo', 'midjourney',
+    'stable diffusion', 'sora', 'chatgpt', 'claude', 'gemini', 'gpt', 'openai',
+    'llm', 'krea', 'updream', 'runninghub', 'hugging face', '豆包',
+  ]],
+  ['game', [
+    '游戏', '攻略', '速通', '解谜', '桌游', '卡牌', '炉石', '万智牌',
+    '天天卡牌', '沙盒游戏', '我的世界', 'minecraft', '缺氧', '环世界', '饥荒',
+    '宝可梦', 'pokemon', 'rpg', '明日方舟',
+  ]],
+  ['tech', [
+    '硬件', '显卡', '芯片', '服务器', '编程', 'nas', '软件', '开源项目', '数码',
+    '机械', '火箭', '星舰', '光伏', '风电', '输电', '变电站', '特高压',
+  ]],
+  ['knowledge', [
+    '科普', '科学', '历史', '人文', '天文', '银河', '星系', '光学', '折射',
+    '生物', '解剖', '财经', '股市', '金融', '投资', '经济', '国际', '时政',
+    '地缘', '战争', '军事', '考古', '未解之谜',
+    '中东', '伊朗', '伊以', '胡塞', '亚洲局势', '也门', '沙特', '巴基斯坦',
+    '欧洲局势',
+  ]],
+  ['life', [
+    '减肥', '减脂', '减重', '户外', '露营', '园艺', '种菜', '装修', '租房',
+    '亲子', '旅行', '旅游',
+  ]],
+  ['food', [
+    '美食', '探店', '关东煮', '日本料理', '吃货', '拉面', '烧烤', '饺子',
+    '食品加工', '街头美食', '美食测评', '试吃', '干饭', '酱香饼', '火锅',
+    '小吃', '咖啡', '烘焙', '菜谱', '做饭',
+  ]],
+  ['animal', [
+    '动物', '萌宠', '宠物', '野生动物', '熊猫', '鹦鹉', '鸟类', '观鸟', '猫',
+    '狗', '八哥', '神奇动物', '动物成精', '白蚁', '大象',
+  ]],
+  ['fun', [
+    '搞笑', '抽象', '段子', '沙雕', '离谱', '翻车', '鬼畜', '名场面', '整蛊',
+    '社死', '烂梗',
+  ]],
+  ['screen', [
+    '电影', '影评', '影视', '动漫', '番剧', '动画', '短片', '微电影', '剧情',
+    '二次元', 'cos', 'cosplay', '火影忍者', '写轮眼', '宇智波', '别天神', '天照',
+  ]],
+  ['music', [
+    '音乐', '钢琴', '吉他', '翻唱', '演奏', '乐队', '演唱会', '歌曲', '听歌',
+    'live',
+  ]],
+]);
+
+// Tags that carry no subject matter: they describe the platform or the upload
+// habit, not the topic. Filtered before matching so a video tagged only
+// ['vlog', '原创'] reaches the next level instead of producing a wrong verdict.
+const NOISE_TAGS = new Set([
+  'vlog', '原创', '生活记录', '高能', '4k', '经验分享', '评论区', '整活', '吐槽',
+  '官方知识付费内容',
+]);
+
+// Campaign / event tags, which name a Bilibili activity rather than a subject.
+const ACTIVITY_TAG = /B站|大赛|计划|总动员|必看|有奖|共创|无限竞技场/i;
+
+// Short ASCII keys ('ai', 'gpt', 'cos') must not match inside unrelated words -
+// plain includes() would read 'paint' or 'trailer' as AI. They match on both
+// sides of a non-alphanumeric boundary instead. Longer keys stay substring
+// matches so 'comfyui' still hits 'comfyui工作流'.
+const SHORT_ASCII = /^[a-z0-9]{1,3}$/;
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function matcherFor(kw) {
+  if (!SHORT_ASCII.test(kw)) return (tag) => tag.includes(kw);
+  const re = new RegExp(`(?<![a-z0-9])${escapeRe(kw)}(?![a-z0-9])`);
+  return (tag) => re.test(tag);
+}
+
+const TAG_MATCHERS = new Map(
+  [...TAG_KEYWORDS].map(([id, keywords]) => [id, keywords.map(matcherFor)]),
+);
+
 export const UNCLASSIFIED = 'unclassified';
 
 const THEME_BY_ID = new Map(THEMES.map((t) => [t.id, t]));
@@ -125,7 +232,55 @@ for (const theme of THEMES) {
   for (const region of theme.regions) REGION_TO_THEME.set(region, theme.id);
 }
 
-export function classifyTheme(title, tname) {
+// Tag-only verdict: lowercase, drop noise, then score each theme by how many
+// distinct tags it can explain. Ties keep the THEMES order, exactly like the
+// title pass. Returns UNCLASSIFIED when nothing survives.
+function classifyByTags(tags) {
+  if (!Array.isArray(tags) || tags.length === 0) return UNCLASSIFIED;
+
+  const cleaned = [];
+  for (const raw of tags) {
+    if (typeof raw !== 'string') continue;
+    const tag = raw.trim().toLowerCase();
+    if (!tag) continue;
+    if (NOISE_TAGS.has(tag) || ACTIVITY_TAG.test(tag)) continue;
+    cleaned.push(tag);
+  }
+  if (!cleaned.length) return UNCLASSIFIED;
+
+  let bestId = UNCLASSIFIED;
+  let bestScore = 0;
+  for (const theme of THEMES) {
+    const matchers = TAG_MATCHERS.get(theme.id);
+    if (!matchers) continue;
+    let score = 0;
+    for (const tag of cleaned) {
+      if (matchers.some((matches) => matches(tag))) score += 1;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestId = theme.id;
+    }
+  }
+  return bestScore > 0 ? bestId : UNCLASSIFIED;
+}
+
+// Evidence order, and why the tag level sits last rather than above the region:
+//   1. title keywords - unchanged, byte for byte. Such rows already have a
+//                       verdict and tags never get a say.
+//   2. region         - also unchanged. It alone classifies the majority of rows
+//                       that have no title signal; letting tags answer before it
+//                       rewrote 26 of those verdicts when measured on the real
+//                       library, and every downstream figure (the AI
+//                       amplification ratio, the cocoon index, the whole trend
+//                       line) is only comparable while the verdicts hold still.
+//                       Tags therefore never override a region verdict.
+//   3. tags           - new layer, fires only where title and region both miss.
+//   4. unclassified
+// The order costs nothing: a tag verdict can only rescue a row the region
+// already failed on, so coverage is identical either way. The only difference is
+// whether 26 past verdicts get rewritten.
+export function classifyTheme(title, tname, tags) {
   const text = String(title ?? '');
   if (text) {
     let bestId = UNCLASSIFIED;
@@ -147,7 +302,7 @@ export function classifyTheme(title, tname) {
     const byRegion = REGION_TO_THEME.get(region);
     if (byRegion) return byRegion;
   }
-  return UNCLASSIFIED;
+  return classifyByTags(tags);
 }
 
 export function themeName(id) {
