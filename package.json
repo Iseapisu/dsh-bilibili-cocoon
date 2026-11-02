@@ -1,0 +1,24 @@
+{
+  "name": "bili-cocoon",
+  "version": "0.1.0",
+  "description": "度量 B站推荐流的信息茧房程度（零依赖）",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": { "bili-cocoon": "src/cli.js" },
+  "exports": {
+    ".": "./src/index.js",
+    "./metrics": "./src/metrics.js",
+    "./api": "./src/api.js"
+  },
+  "files": ["src", "SPEC.md", "README.md"],
+  "scripts": {
+    "collect": "node src/cli.js collect",
+    "score": "node src/cli.js score",
+    "report": "node src/cli.js report",
+    "test": "node test/metrics.test.js",
+    "test:all": "node --test --test-isolation=none test/*.test.js"
+  },
+  "engines": { "node": ">=22" },
+  "license": "MIT",
+  "private": true
+}
