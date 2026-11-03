@@ -470,13 +470,6 @@ function numberOr(value, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-const formatShare = (share) => `${(Number(share) * 100).toFixed(1)}%`;
-const formatRatio = (ratio) => {
-  const n = numberOr(ratio, null);
-  return n === null ? '?' : n.toFixed(2);
-};
-const formatUpShare = (share) => `${(Number(share) * 100).toFixed(0)}%`;
-
 function uploaderKey(row) {
   if (row.mid !== null && row.mid !== undefined) return `mid:${row.mid}`;
   if (row.upName !== null && row.upName !== undefined && row.upName !== '') return `up:${row.upName}`;
@@ -571,20 +564,23 @@ function buildAdvice(attribution, headlineId) {
   // 2.60x here put two answers to the same question on one screen. `ratio` is
   // still returned below; it is the row measure, kept for comparability.
   const multiple = numberOr(top.ratioDedup, numberOr(top.ratio, null));
-  const head = `${top.name} 占你首页 ${formatShare(top.loginShare)}，是游客基线的 ${formatRatio(multiple)} 倍。`;
 
   if (lead && lead.share >= DOMINANT_UP_SHARE) {
     const who = lead.name ?? (lead.mid === null || lead.mid === undefined ? null : `mid ${lead.mid}`);
     if (who) {
       const repeats = top.appearances - top.uniqueBvids;
-      const tail = repeats > 0 ? `，重复曝光 ${repeats} 次` : '';
+      const tail = repeats > 0 ? `，其中有 ${repeats} 次是重复曝光` : '';
       return {
         theme: top.id,
         name: top.name,
         ratio: top.ratio,
         ratioDedup: multiple,
         kind: 'narrow',
-        text: `${head}其中 ${formatUpShare(lead.share)} 来自同一 UP 主「${who}」${tail} —— 想收窄，先别点这类封面。`,
+        // No leading "THEME 占你首页 X%，是游客基线的 N 倍" any more: the panel
+        // block above the table already prints those three numbers, and repeating
+        // them made the sentence read like a generated report. name / loginShare /
+        // ratioDedup are still on this object for anyone who wants the numbers.
+        text: `主要是「${who}」一个 UP 主在推${tail}。想收窄，先别再点这类封面。`,
       };
     }
   }
@@ -595,7 +591,7 @@ function buildAdvice(attribution, headlineId) {
     ratio: top.ratio,
     ratioDedup: multiple,
     kind: 'watch',
-    text: `${head}没有单一 UP 主主导，是题材层面的放大 —— 想换口味，主动搜点别的内容。`,
+    text: '不是某个 UP 主在推，是算法把整个题材调高了。想换口味，就自己搜点别的。',
   };
 }
 

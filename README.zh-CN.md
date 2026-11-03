@@ -284,7 +284,7 @@ node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分�
 - `kind: 'narrow'`：该主题头部 UP 主的份额 ≥ 30%（即 `topUps[0].share`），放大由单一 UP 主撑着，文案里会点名这个 UP 主。
 - `kind: 'watch'`：没有 UP 主到 30%，放大发生在题材层面。
 
-那句文案引的是**去重**倍数（`ratioDedup`），所以和面板徽章一致；`ratio` 是行数口径，留着做对比。
+`text` 只写机制和动作——「不是某个 UP 主在推，是算法把整个题材调高了。想换口味，就自己搜点别的。」——因为面板会在这句话正上方印出 `name`、`loginShare` 和 `ratioDedup`。早先的版本把这几个数字也塞进句首，结果同一屏把同一件事说了两遍。数字仍留在这个对象上，谁要用谁拿。
 
 `advice.theme` 先从 `attribution` 里按 `headline.id` 找，所以徽章和建议句不会各说一个主题；
 只有 headline 没通过 1.2× 筛选时，才回退到 `ratio` 最高的那项。
