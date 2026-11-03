@@ -69,12 +69,12 @@ window.__ModuleLoader__.load({
     // Trend block geometry. Fixed numbers on purpose: the panel is a fixed 380px
     // wide, so the plot gets a fixed 340x56 box with room above for the value
     // labels and below for the date labels.
-    var TREND_W = 340
-    var TREND_PLOT_H = 56
-    var TREND_TOP = 16
-    var TREND_BOTTOM = 15
+    var TREND_W = 348
+    var TREND_PLOT_H = 68
+    var TREND_TOP = 18
+    var TREND_BOTTOM = 16
     var TREND_H = TREND_TOP + TREND_PLOT_H + TREND_BOTTOM
-    var TREND_PAD_X = 18
+    var TREND_PAD_X = 26
     var TREND_SECTION = {
       marginTop: '10px',
       borderTop: '1px solid rgba(255,255,255,0.1)',
@@ -87,22 +87,25 @@ window.__ModuleLoader__.load({
       marginBottom: '2px',
     })
     var TREND_SVG = { display: 'block', maxWidth: '100%', height: 'auto' }
+    var TREND_AREA = { fill: 'rgba(138, 180, 248, 0.16)', stroke: 'none' }
     var TREND_LINE = {
       fill: 'none',
-      stroke: 'rgba(255, 255, 255, 0.8)',
-      strokeWidth: 1.5,
+      stroke: '#8ab4f8',
+      strokeWidth: 2.5,
       strokeLinejoin: 'round',
       strokeLinecap: 'round',
     }
-    var TREND_DOT = { fill: '#ffffff' }
-    var TREND_LABEL = Object.assign({}, DIM, { fontSize: '10px' })
+    var TREND_DOT = { fill: '#8ab4f8' }
+    var TREND_DOT_LAST = { fill: '#ffffff', stroke: '#8ab4f8', strokeWidth: 2 }
+    var TREND_LABEL = Object.assign({}, DIM, { fontSize: '11px' })
+    var TREND_VALUE = { fontSize: '11px', fontWeight: 600, opacity: 0.9 }
     var TREND_NOTE = Object.assign({}, DIM, { fontSize: '11px', marginTop: '4px' })
 
     // The index is computed from either the watch history or the home feed, never
     // from theme counts, and the two samples score several points apart. The note
     // keeps the sample named but drops the essay: direction plus provenance is all
-    // a reader needs, and the old sentence read like a disclaimer.
-    var BASIS_CAVEAT = '越低越分散'
+    // a reader needs.
+    var BASIS_CAVEAT = '越高越宽'
 
     function trendBasisNote(points) {
       var last = null
@@ -385,10 +388,15 @@ window.__ModuleLoader__.load({
       var min = null
       var max = null
 
+      // The index counts concentration: 21.5 is a score out of 100 and reads as
+      // "low", even though low is the good direction. The panel flips it to a width
+      // (100 - index) so the number grows as the mix gets wider — and so the line
+      // rises when things improve, which is how the eye already reads a trend.
       points.forEach(function (p, i) {
         if (!p || typeof p !== 'object') return
-        var v = num(p.cocoon)
-        if (v === null) return
+        var raw = num(p.cocoon)
+        if (raw === null) return
+        var v = 100 - raw
         if (min === null || v < min) min = v
         if (max === null || v > max) max = v
         plotted.push({ i: i, value: v, date: shortDate(p.date) })
@@ -414,28 +422,43 @@ window.__ModuleLoader__.load({
       var marks = []
 
       if (plotted.length > 1) {
-        marks.push(
-          h('polyline', {
-            key: 'line',
-            points: plotted
-              .map(function (p) {
-                return xAt(p.i) + ',' + yAt(p.value)
-              })
-              .join(' '),
-            style: TREND_LINE,
-          }),
-        )
+        var xy = plotted.map(function (p) {
+          return xAt(p.i) + ',' + yAt(p.value)
+        })
+        var baseY = TREND_TOP + TREND_PLOT_H
+        var areaPoints =
+          xAt(plotted[0].i) +
+          ',' +
+          baseY +
+          ' ' +
+          xy.join(' ') +
+          ' ' +
+          xAt(plotted[plotted.length - 1].i) +
+          ',' +
+          baseY
+        marks.push(h('polygon', { key: 'area', points: areaPoints, style: TREND_AREA }))
+        marks.push(h('polyline', { key: 'line', points: xy.join(' '), style: TREND_LINE }))
       }
 
+      var lastIndex = plotted[plotted.length - 1].i
       plotted.forEach(function (p) {
         var x = xAt(p.i)
         var y = yAt(p.value)
-        marks.push(h('circle', { key: 'dot' + p.i, cx: x, cy: y, r: 2.5, style: TREND_DOT }))
+        var isLast = p.i === lastIndex
+        marks.push(
+          h('circle', {
+            key: 'dot' + p.i,
+            cx: x,
+            cy: y,
+            r: isLast ? 4.5 : 3.5,
+            style: isLast ? TREND_DOT_LAST : TREND_DOT,
+          }),
+        )
         marks.push(
           h(
             'text',
-            { key: 'val' + p.i, x: x, y: y - 6, textAnchor: 'middle', style: TREND_LABEL },
-            p.value.toFixed(1),
+            { key: 'val' + p.i, x: x, y: y - 8, textAnchor: 'middle', style: TREND_VALUE },
+            Math.round(p.value),
           ),
         )
         if (p.date) {
@@ -446,7 +469,7 @@ window.__ModuleLoader__.load({
                 key: 'day' + p.i,
                 x: x,
                 y: TREND_TOP + TREND_PLOT_H + 11,
-                textAnchor: 'middle',
+                textAnchor: isLast ? 'end' : 'middle',
                 style: TREND_LABEL,
               },
               p.date,
@@ -465,7 +488,7 @@ window.__ModuleLoader__.load({
             viewBox: '0 0 ' + TREND_W + ' ' + TREND_H,
             style: TREND_SVG,
             role: 'img',
-            'aria-label': '分区-UP 集中度近况',
+            'aria-label': '内容宽度近况',
           },
           marks,
         ),
@@ -489,7 +512,7 @@ window.__ModuleLoader__.load({
       for (var j = points.length - 1; j >= 0; j--) {
         var px = points[j]
         if (px && typeof px === 'object' && num(px.cocoon) !== null) {
-          latest = num(px.cocoon)
+          latest = 100 - num(px.cocoon)
           break
         }
       }
@@ -500,8 +523,8 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: TREND_HEAD },
-          h('span', null, '分区集中度'),
-          h('span', null, latest === null ? title : latest.toFixed(1) + ' · ' + title),
+          h('span', null, '内容宽度'),
+          h('span', null, latest === null ? title : Math.round(latest) + ' · ' + title),
         ),
         chart.node,
         h('div', { style: TREND_NOTE }, trendBasisNote(points)),

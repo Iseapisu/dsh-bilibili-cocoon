@@ -193,7 +193,7 @@ theme                newcomer   fed to you   you watch
 AI / LLM                13.3%  →   24.4%    ←  historyShare
 ```
 
-Both percentages are shares of **distinct videos**, the primary measure; a summary from before the dedup fields falls back to row shares. The row measure is still served, and on 2026-11-02 reads 9.4 % → 24.4 % (2.60×) — the pair earlier versions of this README printed. `you watch` is the theme's share of the history sample: a third distribution, not a third copy of the same ratio, so it is not restated here. The trend line names the `basis` it was computed from in one short line; the long caveat that used to sit under it now lives here instead.
+Both percentages are shares of **distinct videos**, the primary measure; a summary from before the dedup fields falls back to row shares. The row measure is still served, and on 2026-11-02 reads 9.4 % → 24.4 % (2.60×) — the pair earlier versions of this README printed. `you watch` is the theme's share of the history sample: a third distribution, not a third copy of the same ratio, so it is not restated here. The trend block plots `100 − index` and labels it 内容宽度: the index grows as the mix narrows, so the panel flips it — higher means wider, and the line rises when things improve (21.5 reads as 79). It still names the `basis` it was computed from in one short line; the long caveat that used to sit under it lives here instead.
 
 The host half only reads `cocoon.db` and serves `GET /dsh-bilibili-cocoon/summary`; it never writes, never polls, and returns `{ ok: false, error }` instead of throwing — a failing plugin takes the whole GUI down with it.
 
