@@ -49,8 +49,22 @@ window.__ModuleLoader__.load({
       '}',
       '.cocoon-tag > svg { transition: transform .18s cubic-bezier(.3,1.5,.5,1) }',
       '.cocoon-tag:hover > svg, .cocoon-tag.is-hot > svg { transform: scale(1.28) rotate(6deg) }',
+      '@keyframes cocoon-chip-in {',
+      '  from { opacity: 0; transform: translateY(2px) scale(.94) }',
+      '  to { opacity: 1; transform: none }',
+      '}',
+      '@keyframes cocoon-dot-in {',
+      '  from { transform: scale(.2); opacity: 0 }',
+      '  to { transform: scale(1); opacity: 1 }',
+      '}',
+      '.cocoon-chip { animation: cocoon-chip-in .34s cubic-bezier(.22,.85,.3,1) backwards }',
+      '.cocoon-chip-dot {',
+      '  transform-box: fill-box;',
+      '  transform-origin: center;',
+      '  animation: cocoon-dot-in .4s cubic-bezier(.3,1.5,.5,1) backwards;',
+      '}',
       '@media (prefers-reduced-motion: reduce) {',
-      '  .cocoon-seg, .cocoon-tag, .cocoon-tag-glyph { animation: none }',
+      '  .cocoon-seg, .cocoon-tag, .cocoon-tag-glyph, .cocoon-chip, .cocoon-chip-dot { animation: none }',
       '  .cocoon-tag > svg { transform: none }',
       '}',
     ].join('\n')
@@ -282,12 +296,6 @@ window.__ModuleLoader__.load({
       borderBottom: '1px solid rgba(255,255,255,0.1)',
     }
     var FOCUS_ROW = { display: 'flex', justifyContent: 'space-between', gap: '8px' }
-    var FOCUS_LEFT = {
-      minWidth: 0,
-      overflow: 'hidden',
-      textOverflow: 'ellipsis',
-      whiteSpace: 'nowrap',
-    }
 
     // What the home feed is actually made of, above the per-theme table. Every
     // number here is read from `feedFocus` alone. A field that is missing drops
@@ -316,7 +324,11 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: FOCUS_ROW },
-          h('span', { style: FOCUS_LEFT }, name),
+          themeChip(themeHue(typeof top.id === 'string' ? top.id : null, name), name, {
+            fontSize: '12px',
+            padding: '2px 8px',
+            boxSizing: 'border-box',
+          }),
           h(
             'span',
             { style: { fontSize: '18px', fontWeight: 600, fontVariantNumeric: 'tabular-nums' } },
@@ -342,17 +354,25 @@ window.__ModuleLoader__.load({
       var id = a.id !== undefined && a.id !== null ? String(a.id) : ''
       var canExpand = !!attr
       var open = canExpand && expanded === id
+      var themeName = typeof a.name === 'string' && a.name !== '' ? a.name : null
 
       var cells = [
         h(
           'span',
           { key: 'name', style: { display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 } },
           canExpand ? h('span', { style: { opacity: 0.6, flex: 'none' } }, open ? '▾' : '▸') : null,
-          h(
-            'span',
-            { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-            a.name === null || a.name === undefined ? '未知主题' : a.name,
-          ),
+          // No id and no name: nothing to colour by, so it stays plain text. A
+          // missing id with a real name still gets its name's fixed hue.
+          themeName === null && id === ''
+            ? h(
+                'span',
+                { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                '未知主题',
+              )
+            : themeChip(themeHue(id === '' ? null : id, themeName), themeName === null ? '未知主题' : themeName, {
+                fontSize: '11px',
+                padding: '0 6px',
+              }),
         ),
         h('span', { key: 'guest', style: Object.assign({}, NUM, DIM) }, shareCell(a, 'guestShareDedup', 'guestShare')),
         h('span', { key: 'login', style: Object.assign({}, NUM, { fontWeight: 600 }) }, shareCell(a, 'loginShareDedup', 'loginShare')),
@@ -439,6 +459,90 @@ window.__ModuleLoader__.load({
     function sliceColor(i, n) {
       var light = i % 2 === 0 ? 62 : 51
       return 'hsl(' + sliceHue(i, n) + ', 46%, ' + light + '%)'
+    }
+
+    // Theme identity colour. This is a fixed table rather than something derived
+    // per block: the same theme shows up in the lead block, the theme table and
+    // the breakout list, and it has to look like the same theme in all three. The
+    // partition pie below uses sliceHue instead — those hues rotate by position
+    // and answer "how big is this slice", a different question from "which theme
+    // is this".
+    var THEME_COLORS = [
+      ['ai', 'AI / 大模型', 198],
+      ['game', '游戏', 270],
+      ['tech', '科技数码', 162],
+      ['knowledge', '知识科普', 54],
+      ['life', '生活日常', 126],
+      ['food', '美食', 18],
+      ['animal', '动物萌宠', 90],
+      ['fun', '搞笑整活', 342],
+      ['screen', '影视动漫', 306],
+      ['music', '音乐', 234],
+    ]
+    var THEME_HUE_BY_ID = {}
+    var THEME_HUE_BY_NAME = {}
+    THEME_COLORS.forEach(function (row) {
+      THEME_HUE_BY_ID[row[0]] = row[2]
+      THEME_HUE_BY_NAME[row[1]] = row[2]
+    })
+
+    // id first, then name, then a stable hash so an unknown theme still gets a
+    // colour that does not change between renders or blocks.
+    function themeHue(id, name) {
+      if (typeof id === 'string' && THEME_HUE_BY_ID[id] !== undefined) return THEME_HUE_BY_ID[id]
+      if (typeof name === 'string' && THEME_HUE_BY_NAME[name] !== undefined) return THEME_HUE_BY_NAME[name]
+      var seed = (typeof id === 'string' && id) || (typeof name === 'string' && name) || ''
+      var hash = 0
+      for (var i = 0; i < seed.length; i++) hash = (hash * 131 + seed.charCodeAt(i)) % 360
+      return hash
+    }
+
+    // One shared chip for every place a theme name is shown, so the three blocks
+    // cannot drift apart in look or colour. The dot is an identity mark; it is
+    // deliberately not a sector — a sector in the pie legend means "this share".
+    function themeChip(hue, label, extraStyle) {
+      return h(
+        'span',
+        {
+          className: 'cocoon-chip',
+          style: Object.assign(
+            {
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              padding: '1px 7px',
+              borderRadius: '999px',
+              fontSize: '11px',
+              lineHeight: 1.5,
+              maxWidth: '100%',
+              overflow: 'hidden',
+              whiteSpace: 'nowrap',
+              background: 'hsla(' + hue + ', 48%, 52%, 0.20)',
+              border: '1px solid hsla(' + hue + ', 48%, 60%, 0.42)',
+              color: 'hsl(' + hue + ', 60%, 84%)',
+            },
+            extraStyle || {},
+          ),
+        },
+        h(
+          'svg',
+          {
+            width: 8,
+            height: 8,
+            viewBox: '0 0 8 8',
+            'aria-hidden': 'true',
+            style: { flex: 'none', display: 'block' },
+          },
+          h('circle', {
+            className: 'cocoon-chip-dot',
+            cx: 4,
+            cy: 4,
+            r: 3,
+            fill: 'hsl(' + hue + ', 48%, 62%)',
+          }),
+        ),
+        label,
+      )
     }
 
     var LEGEND_COLLAPSED = 3
@@ -679,19 +783,18 @@ window.__ModuleLoader__.load({
     }
     var BREAKOUT_HEAD = { fontWeight: 600, marginBottom: '2px' }
     var BREAKOUT_ITEM = { padding: '3px 0' }
-    var BREAKOUT_META = Object.assign({}, DIM, { marginTop: '1px' })
+    var BREAKOUT_META = { display: 'flex', alignItems: 'center', gap: '3px', marginTop: '1px' }
 
-    // One row: the title is the link, the line under it names the uploader, the
-    // theme and the theme's share of the home feed. Anything missing degrades to a
-    // phrase or disappears - never to the string 'undefined' or to NaN.
+    // One row: the title is the link, the line under it names the uploader and
+    // shows the theme as the same fixed-colour chip used higher up. Anything
+    // missing degrades to a phrase or disappears - never to the string
+    // 'undefined' or to NaN.
     function breakoutItem(v, i) {
       var item = v && typeof v === 'object' ? v : {}
       var title = typeof item.title === 'string' && item.title !== '' ? item.title : '未知标题'
       var upName = typeof item.upName === 'string' && item.upName !== '' ? item.upName : '未知 UP'
       var themeName = typeof item.themeName === 'string' && item.themeName !== '' ? item.themeName : null
-
-      var meta = upName
-      if (themeName !== null) meta += ' · ' + themeName
+      var themeId = typeof item.theme === 'string' && item.theme !== '' ? item.theme : null
 
       // url is what the host sent; a summary without it still gets a link because
       // the bvid is enough to build one. No url and no bvid renders plain text.
@@ -721,7 +824,15 @@ window.__ModuleLoader__.load({
               label,
             )
           : h('div', { style: LINK_STYLE }, label),
-        h('div', { style: BREAKOUT_META }, meta),
+        // The plain-text reading order is still "UP主 · 主题名": the separator is
+        // its own node and the chip's label follows it.
+        h(
+          'div',
+          { style: BREAKOUT_META },
+          h('span', { style: DIM }, upName),
+          themeName === null ? null : h('span', { style: Object.assign({}, DIM, { flex: 'none' }) }, '·'),
+          themeName === null ? null : themeChip(themeHue(themeId, themeName), themeName),
+        ),
       )
     }
 
