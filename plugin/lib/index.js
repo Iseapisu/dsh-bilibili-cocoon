@@ -485,16 +485,6 @@ export function buildBreakout(db, options = {}) {
 
 const ATTRIBUTION_RATIO = 1.2;
 const ATTRIBUTION_LIMIT = 3;
-const DOMINANT_UP_SHARE = 0.3;
-
-// Missing values must stay missing: null/undefined/'' are not 0 here, because 0
-// is a real ratio and 0.00x would be a wrong claim rather than a gap. Anything
-// unusable returns the caller's fallback instead of poisoning the text with NaN.
-function numberOr(value, fallback) {
-  if (value === null || value === undefined || value === '') return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
 
 function uploaderKey(row) {
   if (row.mid !== null && row.mid !== undefined) return `mid:${row.mid}`;
@@ -562,9 +552,9 @@ function buildAttribution(themes, amplification, loginRows, tagMap, themeMap) {
       id: a.id,
       name: a.name,
       ratio: a.ratio,
-      // Same multiple on the dedup measure, so the advice sentence can quote the
-      // number the badge shows instead of mixing the two measures. Null when the
-      // guest baseline has no distinct video in this theme; advice falls back.
+      // Same multiple on the dedup measure the badge quotes, so a reader comparing
+      // the two never sees 1.83x next to 2.60x for the same pair of shares. Null
+      // when the guest baseline has no distinct video in this theme.
       ratioDedup: a.ratioDedup,
       loginShare: a.loginShare,
       guestShare: a.guestShare,
@@ -575,50 +565,6 @@ function buildAttribution(themes, amplification, loginRows, tagMap, themeMap) {
       topVideos,
     };
   });
-}
-
-function buildAdvice(attribution, headlineId) {
-  if (!attribution.length) return null;
-  // Prefer the headline theme so badge and advice never disagree; fall back to
-  // the highest ratio when the headline is absent or not attributed.
-  const top =
-    attribution.find((a) => a.id === headlineId) ??
-    attribution.reduce((best, cur) => (cur.ratio > best.ratio ? cur : best), attribution[0]);
-  const lead = top.topUps[0];
-  // The badge and the feed-focus block both quote the dedup multiple, so this
-  // sentence has to as well: 24.4% over a 13.3% baseline is 1.83x, and printing
-  // 2.60x here put two answers to the same question on one screen. `ratio` is
-  // still returned below; it is the row measure, kept for comparability.
-  const multiple = numberOr(top.ratioDedup, numberOr(top.ratio, null));
-
-  if (lead && lead.share >= DOMINANT_UP_SHARE) {
-    const who = lead.name ?? (lead.mid === null || lead.mid === undefined ? null : `mid ${lead.mid}`);
-    if (who) {
-      const repeats = top.appearances - top.uniqueBvids;
-      const tail = repeats > 0 ? `，其中有 ${repeats} 次是重复曝光` : '';
-      return {
-        theme: top.id,
-        name: top.name,
-        ratio: top.ratio,
-        ratioDedup: multiple,
-        kind: 'narrow',
-        // No leading "THEME 占你首页 X%，是游客基线的 N 倍" any more: the panel
-        // block above the table already prints those three numbers, and repeating
-        // them made the sentence read like a generated report. name / loginShare /
-        // ratioDedup are still on this object for anyone who wants the numbers.
-        text: `主要是「${who}」一个 UP 主在推${tail}。想收窄，先别再点这类封面。`,
-      };
-    }
-  }
-
-  return {
-    theme: top.id,
-    name: top.name,
-    ratio: top.ratio,
-    ratioDedup: multiple,
-    kind: 'watch',
-    text: '不是某个 UP 主在推，是算法把整个题材调高了。想换口味，就自己搜点别的。',
-  };
 }
 
 // ----------------------------------------------------------------------
@@ -805,15 +751,12 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
     );
 
     let attribution = [];
-    let advice = null;
     let attributionError = null;
     try {
       attribution = buildAttribution(themes, amplification, loginRows, tagMap, themeMap);
-      advice = buildAdvice(attribution, head?.id);
     } catch (err) {
       // Attribution is an enhancement; a failure here must not hide the panel.
       attribution = [];
-      advice = null;
       attributionError = String(err && err.message ? err.message : err);
     }
 
@@ -891,7 +834,6 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
       categories,
       breakout,
       attribution,
-      advice,
       trend,
       ...(attributionError === null ? {} : { attributionError }),
       ...(feedFocusError === null ? {} : { feedFocusError }),

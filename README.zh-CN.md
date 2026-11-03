@@ -204,7 +204,6 @@ node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分�
 | `feedFocus` | object \| null | 首页流由什么构成——`{ top, top3Share, effectiveThemes, totalThemes, units, repeatRate }`，见[下文](#feedfocus) |
 | `categories` | object \| null | 首页流的分区构成——`{ covered, total, units, items }`，见[下文](#categories) |
 | `attribution` | array | 最多 3 个主题，下钻到 UP 主和视频——见[下文](#attribution) |
-| `advice` | object \| null | 一句确定性规则生成的建议，不是模型输出——见[下文](#advice) |
 | `trend` | object | 最近 7 天——见[下文](#trend) |
 | `breakout` | object | 游客流里出现、首页没有的内容——见[下文](#breakout) |
 | `attributionError`、`feedFocusError`、`trendError` | string | 只有对应块出错时才出现，其余字段照常返回 |
@@ -289,20 +288,6 @@ node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分�
 }
 ```
 
-### `advice`
-
-没有够格的主题时为 `null`，否则是 `{ theme, name, ratio, ratioDedup, kind, text }`。
-
-它由**固定规则生成，不是 LLM**——不发请求、不拼 prompt，同样输入永远同样一句：
-
-- `kind: 'narrow'`：该主题头部 UP 主的份额 ≥ 30%（即 `topUps[0].share`），放大由单一 UP 主撑着，文案里会点名这个 UP 主。
-- `kind: 'watch'`：没有 UP 主到 30%，放大发生在题材层面。
-
-`text` 只写机制和动作——「不是某个 UP 主在推，是算法把整个题材调高了。想换口味，就自己搜点别的。」——因为面板会在这句话正上方印出 `name`、`loginShare` 和 `ratioDedup`。早先的版本把这几个数字也塞进句首，结果同一屏把同一件事说了两遍。数字仍留在这个对象上，谁要用谁拿。
-
-`advice.theme` 先从 `attribution` 里按 `headline.id` 找，所以徽章和建议句不会各说一个主题；
-只有 headline 没通过 1.2× 筛选时，才回退到 `ratio` 最高的那项。
-
 ### `trend`
 
 ```json
@@ -372,7 +357,7 @@ node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分�
 把这 1.83×（行数口径 2.60×）往下钻：
 
 - `appearances` 20、`uniqueBvids` 20、`repeatRate` 0——20 条 AI 内容是 20 个不同视频、20 个不同 UP 主。
-  其中最强的一个只占这 20 行里的 1 行，离 30% 的门槛差得远，所以 `advice.kind` 是 `watch`：题材层面放大，不是单一 UP 主。
+  其中最强的一个只占这 20 行里的 1 行，离三分之一都差得远：这是题材层面的放大，不是单一 UP 主。
 - `feedFocus` 同一天：`top3Share` 51.2 %、`effectiveThemes` 8.15 / `totalThemes` 10、`units` 84 / 38、`repeatRate` 0 / 0.54。
   一半的流挤在三个主题里，而词表有十个。
 - 这一周：`2026-10-30 → 23.1`、`2026-11-01 → 22.7`、`2026-11-02 → 21.1`、`2026-11-03 → 21.5`，`covered: 4` / 7，四个点全是 `basis: history`、209/209/210/210 行。

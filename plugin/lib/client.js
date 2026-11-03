@@ -10,6 +10,41 @@ window.__ModuleLoader__.load({
     var NS = 'dsh-bilibili-cocoon'
     var ROUTE = '/dsh-bilibili-cocoon/summary'
 
+    // Animation lives in one injected stylesheet: inline styles cannot express a
+    // @keyframes, and the ring should arrive as a ring being drawn rather than as
+    // a finished picture. The panel unmounts when it closes, so reopening replays
+    // it. The prefers-reduced-motion block is not optional — a spinning pie is
+    // exactly the kind of motion someone asking for less of it does not want.
+    var STYLE_ID = 'dsh-bili-cocoon-styles'
+    var STYLES = [
+      '@keyframes cocoon-ring-in {',
+      '  from { transform: rotate(-110deg) scale(.55); opacity: 0 }',
+      '  55% { opacity: 1 }',
+      '  to { transform: rotate(0deg) scale(1); opacity: 1 }',
+      '}',
+      '.cocoon-ring { animation: cocoon-ring-in .64s cubic-bezier(.22,.85,.3,1) both }',
+      '@keyframes cocoon-row-in {',
+      '  from { opacity: 0; transform: translateX(-8px) }',
+      '  to { opacity: 1; transform: translateX(0) }',
+      '}',
+      '.cocoon-row { animation: cocoon-row-in .42s ease-out both }',
+      '@media (prefers-reduced-motion: reduce) {',
+      '  .cocoon-ring, .cocoon-row { animation: none }',
+      '}',
+    ].join('\n')
+
+    function installStyles() {
+      if (typeof document === 'undefined' || !document.head) return function () {}
+      if (document.getElementById(STYLE_ID)) return function () {}
+      var tag = document.createElement('style')
+      tag.id = STYLE_ID
+      tag.textContent = STYLES
+      document.head.appendChild(tag)
+      return function () {
+        if (tag.parentNode) tag.parentNode.removeChild(tag)
+      }
+    }
+
     var PANEL_STYLE = {
       position: 'absolute',
       top: '30px',
@@ -386,7 +421,10 @@ window.__ModuleLoader__.load({
           { style: PIE_BODY },
           h(
             'div',
-            { style: { position: 'relative', width: PIE_SIZE + 'px', height: PIE_SIZE + 'px', flex: 'none' } },
+            {
+              className: 'cocoon-ring',
+              style: { position: 'relative', width: PIE_SIZE + 'px', height: PIE_SIZE + 'px', flex: 'none' },
+            },
             h('div', {
               style: {
                 width: '100%',
@@ -413,7 +451,16 @@ window.__ModuleLoader__.load({
             slices.map(function (s, i) {
               return h(
                 'div',
-                { key: 'p' + i, style: { display: 'flex', alignItems: 'center', gap: '6px' } },
+                {
+                  key: 'p' + i,
+                  className: 'cocoon-row',
+                  style: {
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    animationDelay: 140 + i * 45 + 'ms',
+                  },
+                },
                 h('span', { style: Object.assign({}, PIE_SWATCH, { background: s.color }) }),
                 h('span', { style: { flex: 1, opacity: 0.85, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.name),
                 h('span', { style: { fontVariantNumeric: 'tabular-nums', opacity: 0.75 } }, pct(s.share)),
@@ -424,11 +471,11 @@ window.__ModuleLoader__.load({
       )
     }
 
-    // The breakout block sits at the very bottom, under the advice sentence, and
-    // says what it is: videos the guest sample saw that this home feed never did,
-    // ordered by how little their theme weighs at home. Not "for you" and not
-    // "you may be interested" - the panel cannot know that, and the honest claim
-    // is only ever "this reached a logged-out viewer and not you".
+    // The breakout block sits at the bottom of the panel and says what it is:
+    // videos the guest sample saw that this home feed never did, ordered by how
+    // little their theme weighs at home. Not "for you" and not "you may be
+    // interested" - the panel cannot know that, and the honest claim is only ever
+    // "this reached a logged-out viewer and not you".
     var BREAKOUT_SECTION = {
       marginTop: '10px',
       borderTop: '1px solid rgba(255,255,255,0.1)',
@@ -514,18 +561,6 @@ window.__ModuleLoader__.load({
       return typeof d.date === 'string' && d.date !== '' ? d.date : ''
     }
 
-    // A host from before the copy change opened with "THEME 占你首页 X%，是游客基线
-    // 的 N 倍。" The block above the table already prints those numbers, so drop the
-    // repeated opening instead of showing the same sentence twice.
-    function adviceText(advice) {
-      if (!advice || typeof advice.text !== 'string' || advice.text === '') return ''
-      var dot = advice.text.indexOf('。')
-      if (dot > -1 && advice.text.slice(0, dot).indexOf('占你首页') > -1) {
-        return advice.text.slice(dot + 1).trim()
-      }
-      return advice.text
-    }
-
     function Body(props) {
       var expandedState = React.useState(null)
       var expanded = expandedState[0]
@@ -568,24 +603,6 @@ window.__ModuleLoader__.load({
         })
       }
 
-      var advice = adviceText(data.advice)
-
-      // The fallback sentence is a multiple too, so it uses the same measure as
-      // the badge and the advice: dedup first, rows only when the summary has no
-      // dedup number at all.
-      var fallbackLine = null
-      if (rows[0] && typeof rows[0] === 'object') {
-        var rowName = typeof rows[0].name === 'string' && rows[0].name !== '' ? rows[0].name : '这个题材'
-        var rowRatio = num(rows[0].ratioDedup)
-        if (rowRatio === null) rowRatio = num(rows[0].ratio)
-        fallbackLine =
-          '这一周算法在你身上加码最多的是 ' +
-          rowName +
-          '（' +
-          (rowRatio === null ? '路人没看到' : rowRatio.toFixed(2) + '×') +
-          '）。'
-      }
-
       return h(
         'div',
         null,
@@ -605,13 +622,6 @@ window.__ModuleLoader__.load({
           })
         }),
         categoryBlock(data.categories),
-        advice || fallbackLine
-          ? h(
-              'div',
-              { style: { marginTop: '10px', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '8px' } },
-              h('div', { style: { whiteSpace: 'pre-wrap' } }, advice || fallbackLine),
-            )
-          : null,
         breakoutBlock(data.breakout),
       )
     }
@@ -711,6 +721,9 @@ window.__ModuleLoader__.load({
       name: NS,
       inject: ['slots'],
       apply: function (ctx) {
+        ctx.effect(function () {
+          return installStyles()
+        }, 'bili-cocoon: styles')
         ctx.effect(function () {
           return ctx.slots.inject('conversation.session.header.actions', function () {
             return ctx.slots.register(
