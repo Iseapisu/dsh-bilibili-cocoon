@@ -1,25 +1,23 @@
 # bili-cocoon
 
-[English](README.md)
+[English](README.md) | 中文
 
-用数据回答一个问题：**B站的推荐流是不是在把我关进一个小圈子？**
+**B站的推荐流是不是在把我关进一个小圈子？** 2026-11-03 实测：这个账号的登录首页流里 **27.3%** 是「AI / 大模型」视频，同一天的游客基线是 **9.3%**——**2.9 倍**。这个工具量的就是这个差距，并把曝光（算法推什么）和消费（账号看了什么）分开报告。*单账号样例，是实测不是普遍结论。*
 
-零依赖（只用 Node 内置模块），采集「首页推荐流 / 观看历史 / 全站排行」，算一个 0–100 的**分区-UP 集中度**（代码里仍叫 `cocoonScore`），并生成中文报告。
+零依赖（只用 Node 内置模块），采集「首页推荐流 / 观看历史 / 全站排行」，算一个 0–100 的**分区-UP 集中度**（代码里叫 `cocoonScore`），并生成中文报告。
 
-> 这是独立包（MIT），不修改上游 `@seiuna/dsh-bilibili-plugin`。阶段 2 可以包成 DSH 插件。
+![bili-cocoon DSH 面板：27.3% AI / 大模型、主题表、分区饼图、折叠的「破茧推荐」](docs/panel.png)
 
 ## 快速开始
 
 ```bash
-# 1) 采集（游客模式：推荐流是通用流，历史需要登录）
-node src/cli.js collect --limit 12
-
-# 2) 看分数
-node src/cli.js score
-
-# 3) 生成报告
+node src/cli.js report --demo --out demo-report.md   # 不需要 cookie、不联网：用 test/fixtures 出一份演示报告
+node src/cli.js collect --limit 12                   # 采集自己的首页流；游客模式不需要 cookie
+node src/cli.js score                                # 0–100 分区-UP 集中度，附带 basis
 node src/cli.js report --out report.md
 ```
+
+`--demo` 用内存里的快照渲染仓库自带的 fixtures：不读 cookie、不联网，也从不打开 `data/cocoon.db`；报告首行会标注这是 demo 数据。
 
 登录态（才能真正测「你的」推荐流）：
 
@@ -31,6 +29,10 @@ node src/cli.js collect --cookie-file .\cookie.txt
 ```
 
 > cookie 只从环境变量或 `--cookie-file` 读取，代码里没有任何硬编码；`.gitignore` 已排除 `cookie*.txt`、`bilibili-vault.json`、`bilibili-key.json`。
+
+> 独立包（MIT），仓库里带一个 DSH 面板插件（`plugin/`），不修改上游 `@seiuna/dsh-bilibili-plugin`。
+
+---
 
 ## 分区-UP 集中度怎么算（v2，有文献依据）
 
@@ -367,7 +369,7 @@ node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分�
 
 - Node ≥ 22（用到内置 `node:sqlite`），无 npm 依赖。
 - 限速：所有真实请求串行，间隔 ≥ 1000ms，避免触发风控。
-- 测试：`node test/metrics.test.js`（本机沙箱里 `node --test` 会因为 spawn 权限报 EPERM，改用直接执行）。
+- 测试：`node --test --test-isolation=none test/*.test.js`（121 个，含 `--demo` 路径，全部不需要网络）。
 
 ## 文件结构
 
@@ -393,3 +395,7 @@ tools/          build-tid-map / fix-region-labels / build-region-map / collect-l
 - [ ] 注册 agent 侧工具（`cocoon_report`），让面板和 agent 共用一条代码路径
 
 明确不做：把 AI 从主题表里拆出去、补「时政/社会」这类细分档。十个粗粒度主题正好够跟趋势，再细下去维护成本上去，数字反而更难跟进。
+
+## License
+
+MIT，见 [LICENSE](LICENSE)。Copyright (c) 2026 Iseapisu。

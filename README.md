@@ -1,6 +1,40 @@
 # bili-cocoon
 
-**Is Bilibili's recommendation feed quietly narrowing what you see?**
+English | [中文](README.zh-CN.md)
+
+**Is Bilibili's recommendation feed narrowing what you see?** On 2026-11-03, this account's logged-in home feed was **27.3 % AI / 大模型** videos; the guest baseline from the same day was **9.3 %** — **2.9×**. This toolkit measures that gap and keeps exposure (what the algorithm pushes) apart from consumption (what the account watches). *Single-account sample — a measured example, not a general claim.*
+
+![bili-cocoon DSH panel: 27.3 % AI / 大模型, a four-row theme table, the partition pie and the folded 破茧推荐 list](docs/panel.png)
+
+## Quick start
+
+```bash
+node src/cli.js report --demo --out demo-report.md   # no cookie, no network: renders test/fixtures
+node src/cli.js collect --limit 12                   # snapshot your own feed; guest mode needs no cookie
+node src/cli.js score                                # 0-100 partition/uploader concentration, with its basis
+node src/cli.js report --out report.md
+```
+
+`--demo` renders the repo fixtures from an in-memory snapshot: no cookie, no network, and it never opens `data/cocoon.db`. The report's first line marks it as demo data.
+
+Login state (required for *your* personalized feed):
+
+```bash
+# via environment variable
+$env:BILI_COOKIE = "SESSDATA=...; bili_jct=...; DedeUserID=..."
+
+# or via a file
+node src/cli.js collect --cookie-file .\cookie.txt
+```
+
+Cookies are read **only** from `BILI_COOKIE` or `--cookie-file`; nothing is hardcoded.
+`.gitignore` already excludes `cookie*.txt`, `bilibili-vault.json`, `bilibili-key.json`, `data/`, and `*.db`.
+
+> Standalone package (MIT). Ships with a DSH panel plugin under [`plugin/`](plugin/).
+
+---
+
+## Why two sides
 
 A zero-dependency Node.js toolkit that measures two different things — and insists on keeping them apart:
 
@@ -10,14 +44,6 @@ A zero-dependency Node.js toolkit that measures two different things — and ins
 | **Consumption** | What you actually watch | Watch history |
 
 Conflating the two is the most common mistake in filter-bubble tooling. A healthy viewing history says nothing about whether the feed is narrowing. This project reports both sides, plus the gap between them.
-
-> Standalone package (MIT). Ships with a DSH panel plugin under [`plugin/`](plugin/).
-
-[中文说明](README.zh-CN.md)
-
----
-
-## Why two sides
 
 A single "bubble score" computed from watch history answers *"is my viewing diverse?"* — not *"is the feed feeding me the same thing?"*
 
@@ -33,32 +59,6 @@ The dedup row is the one to quote. The guest feed is resampled from a much small
 Repetition is not the mechanism either: all 20 AI items in the logged-in feed came from **20 different videos by 20 different uploaders** (`repeatRate: 0`, see [`attribution`](#attribution)). The feed is not re-serving a handful of clips — it tilts the whole topic mix. Counting duplicates would have found nothing here, which is why the tool compares distributions instead of counting repeats.
 
 Watch history is the third sample, and it is the one the index number comes from: 21.1 on the same formula, against 14.9 for the 84-row feed ([why the basis matters](#how-the-concentration-index-is-computed)). A consumption-only index would have called this account "open" and missed the skew above — which is why the two sides stay apart.
-
-## Quick start
-
-```bash
-# 1) Collect a snapshot (guest mode: the feed is generic, history needs login)
-node src/cli.js collect --limit 12
-
-# 2) Score it
-node src/cli.js score
-
-# 3) Render a Markdown report
-node src/cli.js report --out report.md
-```
-
-Login state (required for *your* personalized feed):
-
-```bash
-# via environment variable
-$env:BILI_COOKIE = "SESSDATA=...; bili_jct=...; DedeUserID=..."
-
-# or via a file
-node src/cli.js collect --cookie-file .\cookie.txt
-```
-
-Cookies are read **only** from `BILI_COOKIE` or `--cookie-file`; nothing is hardcoded.
-`.gitignore` already excludes `cookie*.txt`, `bilibili-vault.json`, `bilibili-key.json`, `data/`, and `*.db`.
 
 ## How the concentration index is computed
 
@@ -196,6 +196,10 @@ AI / LLM                13.3%  →   24.4%    ←  historyShare
 Both percentages are shares of **distinct videos**, the primary measure; a summary from before the dedup fields falls back to row shares. The row measure is still served, and on 2026-11-02 reads 9.4 % → 24.4 % (2.60×) — the pair earlier versions of this README printed. `you watch` is the theme's share of the history sample: a third distribution, not a third copy of the same ratio, so it is not restated here.
 
 The pie replaced a 0–100 composite score that had been on the panel. The score was a weighted mix of partition entropy, HHI and uploader Gini — correct as a metric, unreadable as a panel element: reading it required the formula, and the scale is so dull that almost every sample lands in the same bucket. The pie needs no formula. It shows what share each top-level partition holds, and `14 / 19 个分区` answers the other question the score was standing in for: how much of the site this feed reaches at all. On 2026-11-03 that is 14 partitions with no single one above 14.3 % — the shape says "spread out" faster than any number did.
+
+![Panel entrance: the partition pie and its tags settle into place](docs/panel.gif)
+
+<img src="docs/panel-breakout.png" width="380" alt="The expanded 破茧推荐 list: every video tagged with its theme's fixed colour">
 
 The host half only reads `cocoon.db` and serves `GET /dsh-bilibili-cocoon/summary`; it never writes, never polls, and returns `{ ok: false, error }` instead of throwing — a failing plugin takes the whole GUI down with it.
 
@@ -362,7 +366,7 @@ Drilling into that 1.83× (2.60× on rows):
 
 - Node ≥ 22 (uses built-in `node:sqlite`); no npm dependencies.
 - All real requests are serialized with a ≥ 1000 ms gap to stay clear of rate limiting.
-- Tests: `node test/metrics.test.js` (19 assertions).
+- Tests: `node --test --test-isolation=none test/*.test.js` (121 tests, including the `--demo` path; no network needed).
 
 ## Repository layout
 
@@ -392,4 +396,4 @@ Dropped on purpose: splitting AI out of the theme table and adding a current-aff
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Iseapisu.
