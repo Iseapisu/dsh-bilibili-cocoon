@@ -466,9 +466,12 @@ test('summary：guest 只有未分类视频时 breakout 为空块而面板其余
 // ----------------------------------------------------------------------
 
 // Minimal React stand-in: elements are plain objects, hooks return their initial
-// value plus a no-op setter, effects never run (no fetch in tests).
+// value plus a no-op setter, effects never run (no fetch in tests). `hookValues`
+// overrides specific hook positions (1-based, in mount order) so a test can mount
+// one section already expanded.
 function fakeReact(options = {}) {
   const state = { hooks: 0 };
+  const hookValues = options.hookValues || {};
   return {
     createElement(type, props) {
       const children = Array.prototype.slice.call(arguments, 2);
@@ -481,16 +484,21 @@ function fakeReact(options = {}) {
       state.hooks += 1;
       // The pill's first hook is `open`; force the panel open so Body is mounted.
       if (options.openPanel === true && state.hooks === 1) return [true, () => {}];
+      if (Object.prototype.hasOwnProperty.call(hookValues, state.hooks)) return [hookValues[state.hooks], () => {}];
       return [typeof init === 'function' ? init() : init, () => {}];
     },
     useEffect() {},
   };
 }
 
+// Hook slots in mount order: 1-5 belong to CocoonPill (open, phase, data, error,
+// attempt), 6 is Body's theme-row expansion, 7 is Body's breakout expansion.
+const BODY_BREAKOUT_HOOK = 7;
+
 // Loads the client half the way the host does: through __ModuleLoader__, with a
 // require that refuses anything but react - the panel must stay a one-module,
 // no-build, zero-dependency script.
-function loadClient() {
+function loadClient(options = {}) {
   const source = readFileSync(new URL('../plugin/lib/client.js', import.meta.url), 'utf8');
   let captured = null;
   const windowStub = {
@@ -504,7 +512,7 @@ function loadClient() {
   assert.ok(captured, 'client 必须通过 __ModuleLoader__ 注册');
 
   const required = [];
-  const React = fakeReact({ openPanel: true });
+  const React = fakeReact(Object.assign({ openPanel: true }, options));
   const plugin = captured.factory((name) => {
     required.push(name);
     if (name !== 'react') throw new Error('unexpected require: ' + name);
@@ -577,9 +585,10 @@ function textOf(node, out = []) {
 }
 
 // Mounts the pill, finds the Body element it renders and calls Body directly with
-// the given summary, so only the panel body is under test.
-function renderBody(data) {
-  const client = loadClient();
+// the given summary, so only the panel body is under test. `options.hookValues`
+// lets a test open one section (see BODY_BREAKOUT_HOOK).
+function renderBody(data, options = {}) {
+  const client = loadClient(options);
   const tree = client.component({});
   const body = findByType(tree, 'Body');
   assert.ok(body, '面板应渲染 Body');
@@ -712,42 +721,49 @@ test('client：注册元信息不变（id / slot / order / inject）', () => {
   assert.deepEqual(required, ['react']);
 });
 
-test('client：破茧推荐在面板末尾，标题不带条数、可点击且带安全属性', () => {
-  const { node, text, elements } = renderBody(fullData());
-
-  // The block label is exactly 破茧推荐: the old title quoted the candidate
-  // count and a lead-in sentence, and both are gone.
-  const labels = textOf(node).map((s) => s.trim());
+test('client：破茧推荐默认折叠，标题不带条数、展开后可点击且带安全属性', () => {
+  // Collapsed is the default: one header row, no list, no links.
+  const collapsed = renderBody(fullData());
+  const labels = textOf(collapsed.node).map((s) => s.trim());
   const blockAt = labels.indexOf('破茧推荐');
   assert.ok(blockAt !== -1, '块标题应恰好是「破茧推荐」');
   assert.ok(
     !labels.some((s) => s.includes('路人能刷到，你刷不到') || s.includes('条）')),
     '块标题不应带候选条数',
   );
+  assert.ok(labels.includes('展开'), '折叠态右侧应有「展开」控件');
+  assert.ok(!labels.includes('收起'), '折叠态右侧不应是「收起」');
+  assert.equal(LINKS(collapsed.elements).length, 0, '折叠态不应渲染任何视频链接');
+  for (const item of BREAKOUT_ITEMS) {
+    assert.ok(!collapsed.text.includes(item.title), '折叠态不应渲染列表标题');
+  }
 
   // The block sits at the bottom: after the theme table and the partition pie.
   assert.ok(blockAt > labels.indexOf('推给你'), '破茧推荐应在主题表之后');
   assert.ok(blockAt > labels.indexOf('分区构成'), '破茧推荐应在分区饼图之后');
   assert.ok(!labels.some((s) => s.includes('建议句')), '面板不应再渲染建议句');
 
-  // Every title is a link that opens in a new tab, safely.
-  const links = LINKS(elements);
+  // Expanded: the same list as before, every title a safe new-tab link.
+  const expanded = renderBody(fullData(), { hookValues: { [BODY_BREAKOUT_HOOK]: true } });
+  const expandedLabels = textOf(expanded.node).map((s) => s.trim());
+  assert.ok(expandedLabels.includes('收起'), '展开态右侧应变成「收起」');
+  const links = LINKS(expanded.elements);
   assert.equal(links.length, BREAKOUT_ITEMS.length);
   for (const [i, item] of BREAKOUT_ITEMS.entries()) {
     assert.equal(links[i].props.href, item.url);
     assert.equal(links[i].props.target, '_blank');
     assert.equal(links[i].props.rel, 'noopener noreferrer');
     assert.equal(typeof links[i].props.onClick, 'function');
-    assert.ok(text.includes(String(i + 1) + '. ' + item.title), '标题应带序号');
+    assert.ok(expanded.text.includes(String(i + 1) + '. ' + item.title), '标题应带序号');
   }
 
   // The line under each title: uploader · theme. The home share is no longer
   // repeated here in parentheses (it lives in the theme table).
-  assert.ok(text.includes('逗比的雀巢 · 搞笑整活'));
-  assert.ok(text.includes('卜肉熊brx · 影视动漫'));
-  assert.ok(text.includes('Git源宝 · AI / 大模型'));
+  assert.ok(expanded.text.includes('逗比的雀巢 · 搞笑整活'));
+  assert.ok(expanded.text.includes('卜肉熊brx · 影视动漫'));
+  assert.ok(expanded.text.includes('Git源宝 · AI / 大模型'));
 
-  assert.ok(!/undefined|NaN/.test(text), text);
+  assert.ok(!/undefined|NaN/.test(expanded.text), expanded.text);
 });
 
 test('client：breakout 缺失 / items 为空 / items 不是数组时整块不渲染', () => {
@@ -784,7 +800,12 @@ test('client：标题 / UP 缺失时兜底，themeName 缺失时只剩 UP', () =
     // No bvid, no url, no theme: plain text, no link, no theme name.
     { title: '无链接视频', upName: '散人', theme: 'life', themeName: '生活日常' },
   ];
-  const { text, elements } = renderBody(fullData({ breakout: { candidates: 4, items } }));
+  const data = fullData({ breakout: { candidates: 4, items } });
+  // Collapsed by default, so the list has to be opened explicitly.
+  const collapsed = renderBody(data);
+  assert.match(collapsed.text, /破茧推荐/);
+  assert.equal(LINKS(collapsed.elements).length, 0, '折叠态不应渲染列表');
+  const { text, elements } = renderBody(data, { hookValues: { [BODY_BREAKOUT_HOOK]: true } });
 
   assert.match(text, /1\. 未知标题/);
   assert.match(text, /未知 UP · 搞笑整活/);
@@ -810,7 +831,13 @@ test('client：block 与 items 里的脏数据不抛异常', () => {
     [],
     { bvid: {}, title: 42, upName: [], loginShare: 'NaN', themeName: {} },
   ];
-  const { text } = renderBody(fullData({ breakout: { candidates: 6, items: dirty } }));
+  const data = fullData({ breakout: { candidates: 6, items: dirty } });
+  // Collapsed mounts the header without touching the entries...
+  const collapsed = renderBody(data);
+  assert.match(collapsed.text, /破茧推荐/);
+  assert.equal(LINKS(collapsed.elements).length, 0);
+  // ...and opening it is what exercises every dirty entry through breakoutItem.
+  const { text } = renderBody(data, { hookValues: { [BODY_BREAKOUT_HOOK]: true } });
   assert.match(text, /破茧推荐/);
   assert.ok(!/undefined|NaN/.test(text), text);
 });

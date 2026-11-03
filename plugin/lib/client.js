@@ -63,8 +63,16 @@ window.__ModuleLoader__.load({
       '  transform-origin: center;',
       '  animation: cocoon-dot-in .4s cubic-bezier(.3,1.5,.5,1) backwards;',
       '}',
+      '@keyframes cocoon-breakout-in {',
+      '  from { opacity: 0; transform: translateY(3px) }',
+      '  to { opacity: 1; transform: none }',
+      '}',
+      '.cocoon-breakout-item {',
+      '  animation: cocoon-breakout-in .3s ease-out backwards;',
+      '  animation-delay: var(--breakout-delay, 0ms);',
+      '}',
       '@media (prefers-reduced-motion: reduce) {',
-      '  .cocoon-seg, .cocoon-tag, .cocoon-tag-glyph, .cocoon-chip, .cocoon-chip-dot { animation: none }',
+      '  .cocoon-seg, .cocoon-tag, .cocoon-tag-glyph, .cocoon-chip, .cocoon-chip-dot, .cocoon-breakout-item { animation: none }',
       '  .cocoon-tag > svg { transform: none }',
       '}',
     ].join('\n')
@@ -360,14 +368,6 @@ window.__ModuleLoader__.load({
         h(
           'span',
           { key: 'name', style: { display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 } },
-          // A fixed-width slot on every row, so the theme chips line up whether or
-          // not the row has attribution data. Rows without one stay blank and are
-          // not clickable — the slot is spacing, not an affordance.
-          h(
-            'span',
-            { style: { flex: 'none', width: '10px', textAlign: 'center', opacity: 0.6 } },
-            canExpand ? (open ? '▾' : '▸') : null,
-          ),
           // No id and no name: nothing to colour by, so it stays plain text. A
           // missing id with a real name still gets its name's fixed hue.
           themeName === null && id === ''
@@ -380,6 +380,9 @@ window.__ModuleLoader__.load({
                 fontSize: '11px',
                 padding: '0 6px',
               }),
+          // The caret trails the chip. A row without attribution simply has no
+          // caret at all — an empty slot in front used to read as a broken row.
+          canExpand ? h('span', { style: { opacity: 0.6, flex: 'none' } }, open ? '▾' : '▸') : null,
         ),
         h('span', { key: 'guest', style: Object.assign({}, NUM, DIM) }, shareCell(a, 'guestShareDedup', 'guestShare')),
         h('span', { key: 'login', style: Object.assign({}, NUM, { fontWeight: 600 }) }, shareCell(a, 'loginShareDedup', 'loginShare')),
@@ -789,6 +792,17 @@ window.__ModuleLoader__.load({
       fontSize: '12px',
     }
     var BREAKOUT_HEAD = { fontWeight: 600, marginBottom: '2px' }
+    // Collapsed by default: one row, the list one click away. The whole row is the
+    // control, using the same 展开 / 收起 language as the partition legend.
+    var BREAKOUT_HEAD_ROW = {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: '8px',
+      cursor: 'pointer',
+      userSelect: 'none',
+    }
+    var BREAKOUT_TOGGLE = { fontSize: '11px', opacity: 0.55, flex: 'none' }
     var BREAKOUT_ITEM = { padding: '3px 0' }
     var BREAKOUT_META = { display: 'flex', alignItems: 'center', gap: '3px', marginTop: '1px' }
 
@@ -815,7 +829,11 @@ window.__ModuleLoader__.load({
 
       return h(
         'div',
-        { key: key, style: BREAKOUT_ITEM },
+        {
+          key: key,
+          className: 'cocoon-breakout-item',
+          style: Object.assign({}, BREAKOUT_ITEM, { '--breakout-delay': i * 40 + 'ms' }),
+        },
         url
           ? h(
               'a',
@@ -845,7 +863,7 @@ window.__ModuleLoader__.load({
 
     // Nothing at all when the summary has no block, no items, or a malformed one:
     // an old host and an empty guest sample must both leave the panel as it was.
-    function breakoutBlock(breakout) {
+    function breakoutBlock(breakout, open, onToggle) {
       if (!breakout || typeof breakout !== 'object') return null
       var items = Array.isArray(breakout.items) ? breakout.items : []
       if (!items.length) return null
@@ -857,10 +875,17 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { style: BREAKOUT_SECTION },
-        h('div', { style: BREAKOUT_HEAD }, head),
-        items.map(function (v, i) {
-          return breakoutItem(v, i)
-        }),
+        h(
+          'div',
+          { style: BREAKOUT_HEAD_ROW, onClick: onToggle },
+          h('span', { style: BREAKOUT_HEAD }, head),
+          h('span', { style: BREAKOUT_TOGGLE }, open ? '收起' : '展开'),
+        ),
+        open
+          ? items.map(function (v, i) {
+              return breakoutItem(v, i)
+            })
+          : null,
       )
     }
 
@@ -876,6 +901,12 @@ window.__ModuleLoader__.load({
       var expandedState = React.useState(null)
       var expanded = expandedState[0]
       var setExpanded = expandedState[1]
+
+      // Breakout list opens on demand: five fully drawn entries made the panel
+      // needlessly tall, and the list is secondary to the summary above it.
+      var breakoutState = React.useState(false)
+      var breakoutOpen = breakoutState[0]
+      var setBreakoutOpen = breakoutState[1]
 
       var data = props.data
       if (props.phase === 'loading') return h('div', { style: DIM }, '读取中…')
@@ -933,7 +964,9 @@ window.__ModuleLoader__.load({
           })
         }),
         h(CategoryBlock, { cats: data.categories }),
-        breakoutBlock(data.breakout),
+        breakoutBlock(data.breakout, breakoutOpen, function () {
+          setBreakoutOpen(!breakoutOpen)
+        }),
       )
     }
 
