@@ -415,7 +415,7 @@ async function summaryOf(exposure) {
   }
 }
 
-test('summary：breakout 挂在 feedFocus 之后，既有字段一个不少', async () => {
+test('summary：breakout 挂在 categories 之后，既有字段一个不少', async () => {
   const r = await summaryOf([
     { kind: 'login', round: 1, items: LOGIN },
     { kind: 'guest', round: 1, items: GUEST },
@@ -425,10 +425,13 @@ test('summary：breakout 挂在 feedFocus 之后，既有字段一个不少', as
   assert.equal('breakoutError' in r, false);
 
   const keys = Object.keys(r);
-  assert.equal(keys.indexOf('breakout'), keys.indexOf('feedFocus') + 1);
-  for (const key of ['headline', 'feedFocus', 'attribution', 'advice', 'trend', 'amplification']) {
+  // 面板顺序：feedFocus → 分区饼图(categories) → 破茧推荐。
+  assert.equal(keys.indexOf('breakout'), keys.indexOf('categories') + 1);
+  for (const key of ['headline', 'feedFocus', 'categories', 'attribution', 'trend', 'amplification']) {
     assert.ok(key in r, `summary 不能丢掉 ${key}`);
   }
+  // advice 已从 summary 契约删除（面板不再有建议句）。
+  assert.equal('advice' in r, false);
 
   assert.equal(r.breakout.candidates, 10);
   assert.equal(r.breakout.items.length, 5);
@@ -538,10 +541,17 @@ function findByType(node, name) {
   return findByType(node.props && node.props.children, name);
 }
 
+// Function elements (CategoryBlock is the only one in Body today) are rendered
+// with the fake React as well, otherwise their subtree - the partition pie and
+// its collapsed legend - would be invisible to the text assertions.
 function elementsOf(node, out = []) {
   if (!node || typeof node !== 'object') return out;
   if (Array.isArray(node)) {
     for (const child of node) elementsOf(child, out);
+    return out;
+  }
+  if (typeof node.type === 'function') {
+    elementsOf(node.type(node.props), out);
     return out;
   }
   out.push(node);
@@ -558,6 +568,9 @@ function textOf(node, out = []) {
   if (typeof node === 'string' || typeof node === 'number') {
     out.push(String(node));
     return out;
+  }
+  if (typeof node === 'object' && typeof node.type === 'function') {
+    return textOf(node.type(node.props), out);
   }
   if (typeof node === 'object' && node.props) textOf(node.props.children, out);
   return out;
@@ -664,9 +677,22 @@ function fullData(overrides = {}) {
         units: { login: 84, guest: 38 },
         repeatRate: { login: 0, guest: 0.54 },
       },
+      categories: {
+        covered: 6,
+        total: 19,
+        units: 84,
+        items: [
+          { name: '动画', n: 30, share: 0.3571 },
+          { name: '游戏', n: 20, share: 0.2381 },
+          { name: '知识', n: 12, share: 0.1429 },
+          { name: '科技', n: 10, share: 0.119 },
+          { name: '生活', n: 8, share: 0.0952 },
+          { name: '鬼畜', n: 4, share: 0.0476 },
+        ],
+      },
       breakout: { candidates: 37, items: BREAKOUT_ITEMS },
       attribution: [],
-      advice: { theme: 'ai', name: 'AI / 大模型', ratio: 2.26, ratioDedup: 2.26, kind: 'watch', text: '建议句：没有单一 UP 主主导。' },
+      // advice 不再出现在 summary 里：面板没有建议句，夹具也不再伪造该字段。
       trend: null,
     },
     overrides,
@@ -686,18 +712,23 @@ test('client：注册元信息不变（id / slot / order / inject）', () => {
   assert.deepEqual(required, ['react']);
 });
 
-test('client：破茧推荐渲染在建议句之后，标题可点击且带安全属性', () => {
+test('client：破茧推荐在面板末尾，标题不带条数、可点击且带安全属性', () => {
   const { node, text, elements } = renderBody(fullData());
 
-  assert.match(text, /破茧推荐/);
-  assert.match(text, /游客看到、你首页没有的 37 条里，这几条被压得最狠：/);
-
-  // The block sits at the bottom: after the advice sentence and its note.
+  // The block label is exactly 破茧推荐: the old title quoted the candidate
+  // count and a lead-in sentence, and both are gone.
   const labels = textOf(node).map((s) => s.trim());
-  const adviceAt = labels.findIndex((s) => s.includes('建议句'));
-  const blockAt = labels.findIndex((s) => s.includes('破茧推荐'));
-  assert.ok(adviceAt !== -1 && blockAt !== -1);
-  assert.ok(blockAt > adviceAt, '破茧推荐应在建议句之后');
+  const blockAt = labels.indexOf('破茧推荐');
+  assert.ok(blockAt !== -1, '块标题应恰好是「破茧推荐」');
+  assert.ok(
+    !labels.some((s) => s.includes('路人能刷到，你刷不到') || s.includes('条）')),
+    '块标题不应带候选条数',
+  );
+
+  // The block sits at the bottom: after the theme table and the partition pie.
+  assert.ok(blockAt > labels.indexOf('推给你'), '破茧推荐应在主题表之后');
+  assert.ok(blockAt > labels.indexOf('分区构成'), '破茧推荐应在分区饼图之后');
+  assert.ok(!labels.some((s) => s.includes('建议句')), '面板不应再渲染建议句');
 
   // Every title is a link that opens in a new tab, safely.
   const links = LINKS(elements);
@@ -710,10 +741,11 @@ test('client：破茧推荐渲染在建议句之后，标题可点击且带安�
     assert.ok(text.includes(String(i + 1) + '. ' + item.title), '标题应带序号');
   }
 
-  // The line under each title: uploader · theme (home share).
-  assert.ok(text.includes('逗比的雀巢 · 搞笑整活（你首页 4.9%）'));
-  assert.ok(text.includes('卜肉熊brx · 影视动漫（你首页 14.3%）'));
-  assert.ok(text.includes('Git源宝 · AI / 大模型（你首页 23.8%）'));
+  // The line under each title: uploader · theme. The home share is no longer
+  // repeated here in parentheses (it lives in the theme table).
+  assert.ok(text.includes('逗比的雀巢 · 搞笑整活'));
+  assert.ok(text.includes('卜肉熊brx · 影视动漫'));
+  assert.ok(text.includes('Git源宝 · AI / 大模型'));
 
   assert.ok(!/undefined|NaN/.test(text), text);
 });
@@ -722,39 +754,45 @@ test('client：breakout 缺失 / items 为空 / items 不是数组时整块不�
   for (const breakout of [undefined, null, {}, { candidates: 37, items: [] }, { candidates: 37, items: 'nope' }, 'junk', 7]) {
     const { text } = renderBody(fullData({ breakout }));
     assert.ok(!text.includes('破茧推荐'), '不应渲染破茧推荐块');
-    // The rest of the panel is untouched: theme row, advice and note still there.
+    // The rest of the panel is untouched: feed focus, theme table and pie.
     assert.match(text, /AI \/ 大模型/);
-    assert.match(text, /建议句/);
-    assert.match(text, /顺序按「推给你 − 路人」排/);
+    assert.match(text, /推给你/);
+    assert.match(text, /分区构成/);
+    assert.match(text, /全部 6 个 · 展开/);
     assert.ok(!/undefined|NaN/.test(text), text);
   }
 });
 
-test('client：candidates 缺失或非法时去掉数字，不出现 NaN', () => {
+test('client：candidates 缺失或非法不影响块标题（标题不带条数、无 NaN）', () => {
   for (const candidates of [undefined, null, '', 'abc', NaN, -3]) {
     const { text } = renderBody(fullData({ breakout: { candidates, items: BREAKOUT_ITEMS } }));
+    // The old title quoted the candidate count; the current one is a fixed
+    // label, so a bad candidates value must not change it.
     assert.match(text, /破茧推荐/);
-    assert.match(text, /游客看得到、你首页没有的视频里，这几条被压得最狠：/);
+    assert.ok(!/破茧推荐（|路人能刷到，你刷不到/.test(text));
     assert.ok(!/undefined|NaN/.test(text), text);
   }
 });
 
-test('client：标题 / UP 缺失时兜底，登录份额为 0 时照常显示 0.0%', () => {
+test('client：标题 / UP 缺失时兜底，themeName 缺失时只剩 UP', () => {
   const items = [
     { bvid: 'BVz1', title: null, upName: null, mid: null, theme: 'fun', themeName: '搞笑整活', loginShare: 0, guestShare: 0.2 },
-    // No themeName at all: the parenthetical share still renders.
+    // No themeName at all: the meta line is just the uploader.
     { bvid: 'BVz2', title: '一支视频', upName: '某UP', mid: 1, theme: 'ai', themeName: null, loginShare: 0.1234 },
     // No url: the bvid is enough to build one.
     { bvid: 'BVz3', title: '另一支视频', upName: '另一UP', mid: 2, theme: 'game', themeName: '游戏', loginShare: 0.2 },
-    // No bvid, no url, no share: plain text, no link, no parenthetical.
+    // No bvid, no url, no theme: plain text, no link, no theme name.
     { title: '无链接视频', upName: '散人', theme: 'life', themeName: '生活日常' },
   ];
   const { text, elements } = renderBody(fullData({ breakout: { candidates: 4, items } }));
 
   assert.match(text, /1\. 未知标题/);
-  assert.match(text, /未知 UP · 搞笑整活（你首页 0\.0%）/);
-  assert.match(text, /某UP（你首页 12\.3%）/);
-  assert.match(text, /无链接视频/);
+  assert.match(text, /未知 UP · 搞笑整活/);
+  assert.match(text, /2\. 一支视频 某UP(?:\s|$)/);
+  assert.match(text, /3\. 另一支视频 另一UP · 游戏/);
+  assert.match(text, /4\. 无链接视频/);
+  // The old case also asserted a "你首页 0.0%" share under each pick; the client
+  // no longer renders that parenthetical, so that half is gone.
   assert.ok(!/undefined|NaN/.test(text), text);
 
   const links = LINKS(elements);

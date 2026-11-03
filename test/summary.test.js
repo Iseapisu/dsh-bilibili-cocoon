@@ -1,5 +1,7 @@
-// Unit tests for the host summary (attribution, advice, trends) and for the
-// tag data layer (fetchVideoTags / video_tag store).
+// Unit tests for the host summary (attribution, feed focus, trends) and for the
+// tag data layer (fetchVideoTags / video_tag store). The old summary.advice
+// field no longer exists: the panel dropped the advice sentence, so the cases
+// that only asserted it are gone.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -195,25 +197,11 @@ test('summary：空 exposure 表返回 ok:false 而不是抛异常', async () =>
   }
 });
 
-test('summary：advice 在单一 UP 主导时为 narrow', async () => {
-  const r = await summaryOf(DOMINANT_UP_EXPOSURE);
-  assert.equal(r.ok, true);
-  assert.equal(r.advice.kind, 'narrow');
-  assert.equal(r.advice.theme, 'ai');
-  assert.equal(r.advice.name, 'AI / 大模型');
-  assert.equal(r.advice.ratio, 2.5);
-  // The sentence quotes the multiple the badge shows: 2/7 of the login videos
-  // over 2/10 of the guest videos = 1.43, not the 2.50 row ratio.
-  assert.equal(r.advice.ratioDedup, 1.43);
-  assert.match(r.advice.text, /50\.0%/);
-  assert.match(r.advice.text, /1\.43 倍/);
-  assert.ok(!r.advice.text.includes('2.50'), r.advice.text);
-  assert.ok(r.advice.text.includes('UP甲'));
-  assert.ok(r.advice.text.includes('重复曝光 3 次'));
-  assert.ok(r.advice.text.includes('想收窄'));
-});
+// The "advice narrow" case was deleted: buildSummary() no longer returns
+// summary.advice at all (the panel has no advice sentence any more). The same
+// exposure is still covered by the attribution and headline cases below.
 
-test('summary：advice 在没有单一 UP 主导时为 watch', async () => {
+test('summary：多个 UP 并列时归因 topUps 截断为 3 条', async () => {
   const exposure = [
     {
       kind: 'login',
@@ -243,13 +231,12 @@ test('summary：advice 在没有单一 UP 主导时为 watch', async () => {
   ];
   const r = await summaryOf(exposure);
   assert.equal(r.ok, true);
-  assert.equal(r.advice.kind, 'watch');
-  assert.equal(r.advice.theme, 'ai');
-  assert.equal(r.advice.ratio, 3);
-  assert.ok(r.advice.text.includes('没有单一 UP 主主导'));
-  assert.ok(r.advice.text.includes('60.0%'));
+  // summary.advice（以及它跟随的 watch/narrow 分支）已从契约删除；这条用例
+  // 只保留仍然成立的归因 topUps 截断与占比断言。
+  assert.equal('advice' in r, false);
 
   const entry = r.attribution.find((a) => a.id === 'ai');
+  assert.ok(entry, 'ai 主题应被归因');
   assert.equal(entry.topUps.length, 3);
   assert.ok(entry.topUps.every((up) => up.mid !== null || up.name !== null));
   assert.equal(entry.topUps[0].share, 0.1667);
@@ -295,7 +282,7 @@ test('summary：UP 信息缺失时原样透出 null，双空跳过', async () =>
   assert.equal(bare.url, 'https://www.bilibili.com/video/BVn3');
 });
 
-test('summary：没有归因主题时 advice 为 null', async () => {
+test('summary：没有归因主题时 attribution 为空、不再返回 advice', async () => {
   const exposure = [
     {
       kind: 'login',
@@ -311,12 +298,13 @@ test('summary：没有归因主题时 advice 为 null', async () => {
   const r = await summaryOf(exposure);
   assert.equal(r.ok, true);
   assert.deepEqual(r.attribution, []);
-  assert.equal(r.advice, null);
+  // advice 已删除：字段根本不存在，而不是被置成 null。
+  assert.equal('advice' in r, false);
 });
 
 // login total 25: ai 20, game 4, screen 1. guest total 100: ai 50, game 49, screen 1.
 // The highest ratio is screen (4.00) but the biggest gap is ai (0.30), so the
-// headline and the advice must both land on ai.
+// headline must land on ai.
 const HEADLINE_VS_RATIO_EXPOSURE = [
   {
     kind: 'login',
@@ -342,7 +330,7 @@ const HEADLINE_VS_RATIO_EXPOSURE = [
   },
 ];
 
-test('summary：advice 跟随 headline，而不是 ratio 最高的主题', async () => {
+test('summary：headline 打在 gap 最大的主题，而不是 ratio 最高的主题', async () => {
   const r = await summaryOf(HEADLINE_VS_RATIO_EXPOSURE);
   assert.equal(r.ok, true);
 
@@ -359,11 +347,9 @@ test('summary：advice 跟随 headline，而不是 ratio 最高的主题', async
   const screenRow = r.amplification.find((a) => a.id === 'screen');
   assert.ok(aiRow.loginShare - aiRow.guestShare > screenRow.loginShare - screenRow.guestShare);
 
-  assert.equal(r.advice.theme, 'ai');
-  assert.equal(r.advice.name, 'AI / 大模型');
-  assert.equal(r.advice.ratio, 1.6);
-  assert.equal(r.advice.kind, 'narrow');
-  assert.match(r.advice.text, /80\.0%/);
+  // The old case also checked that summary.advice followed the headline; that
+  // field is gone, so only the headline selection itself is asserted now.
+  assert.equal('advice' in r, false);
 });
 
 test('summary：归因抛错时降级返回 ok:true，其余字段照常', async () => {
@@ -384,7 +370,8 @@ test('summary：归因抛错时降级返回 ok:true，其余字段照常', async
   assert.ok(r.amplification.length > 0);
 
   assert.deepEqual(r.attribution, []);
-  assert.equal(r.advice, null);
+  // advice 已从 summary 契约删除。
+  assert.equal('advice' in r, false);
   assert.equal(r.attributionError, 'simulated attribution failure');
 });
 
@@ -586,7 +573,9 @@ test('trend：单天 cocoonScore 抛错时该天降级为 null，summary 其余�
   assert.equal(r.login.count, 10);
   assert.equal(r.guest.count, 10);
   assert.equal(r.headline.ratio, 2.5);
-  assert.equal(r.advice.kind, 'narrow');
+  // advice 已从 summary 契约删除，改用仍是真实契约的字段兜住降级。
+  assert.equal('advice' in r, false);
+  assert.ok(r.feedFocus, 'feedFocus 仍应算出');
 });
 
 // ----------------------------------------------------------------------
