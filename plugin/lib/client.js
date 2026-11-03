@@ -66,61 +66,25 @@ window.__ModuleLoader__.load({
       borderRadius: '4px',
     }
 
-    // Trend block geometry. Fixed numbers on purpose: the panel is a fixed 380px
-    // wide, so the plot gets a fixed 340x56 box with room above for the value
-    // labels and below for the date labels.
-    var TREND_W = 348
-    var TREND_PLOT_H = 68
-    var TREND_TOP = 18
-    var TREND_BOTTOM = 16
-    var TREND_H = TREND_TOP + TREND_PLOT_H + TREND_BOTTOM
-    var TREND_PAD_X = 26
-    var TREND_SECTION = {
+    // Partition pie. The panel is a fixed 380px wide, so the circle and the legend
+    // take fixed sizes rather than a flex ratio that reflows on every render.
+    var PIE_SIZE = 108
+    var PIE_HOLE = 62
+    var PIE_COLORS = ['#8ab4f8', '#f2a65a', '#7bd88f', '#e08fd0', '#f7d060', '#7fd1d8', '#9aa4b2']
+    var PIE_SECTION = {
       marginTop: '10px',
       borderTop: '1px solid rgba(255,255,255,0.1)',
       paddingTop: '8px',
     }
-    var TREND_HEAD = Object.assign({}, DIM, {
+    var PIE_HEAD = Object.assign({}, DIM, {
       display: 'flex',
       justifyContent: 'space-between',
       fontSize: '11px',
-      marginBottom: '2px',
+      marginBottom: '8px',
     })
-    var TREND_SVG = { display: 'block', maxWidth: '100%', height: 'auto' }
-    var TREND_AREA = { fill: 'rgba(138, 180, 248, 0.16)', stroke: 'none' }
-    var TREND_LINE = {
-      fill: 'none',
-      stroke: '#8ab4f8',
-      strokeWidth: 2.5,
-      strokeLinejoin: 'round',
-      strokeLinecap: 'round',
-    }
-    var TREND_DOT = { fill: '#8ab4f8' }
-    var TREND_DOT_LAST = { fill: '#ffffff', stroke: '#8ab4f8', strokeWidth: 2 }
-    var TREND_LABEL = Object.assign({}, DIM, { fontSize: '11px' })
-    var TREND_VALUE = { fontSize: '11px', fontWeight: 600, opacity: 0.9 }
-    var TREND_NOTE = Object.assign({}, DIM, { fontSize: '11px', marginTop: '4px' })
-
-    // The index is computed from either the watch history or the home feed, never
-    // from theme counts, and the two samples score several points apart. The note
-    // keeps the sample named but drops the essay: direction plus provenance is all
-    // a reader needs.
-    var BASIS_CAVEAT = '越高越宽'
-
-    function trendBasisNote(points) {
-      var last = null
-      for (var i = points.length - 1; i >= 0; i--) {
-        var p = points[i]
-        if (!p || typeof p !== 'object') continue
-        if (p.basis === 'history' || p.basis === 'feed') {
-          last = p
-          break
-        }
-      }
-      if (last === null) return BASIS_CAVEAT
-      var source = last.basis === 'history' ? '观看历史' : '首页推荐'
-      return BASIS_CAVEAT + ' · 按' + source + '算'
-    }
+    var PIE_BODY = { display: 'flex', alignItems: 'center', gap: '16px' }
+    var PIE_LEGEND = { flex: 1, minWidth: 0, fontSize: '11px', lineHeight: '1.8' }
+    var PIE_SWATCH = { width: '8px', height: '8px', borderRadius: '2px', flex: 'none' }
 
     function pct(x) {
       var n = Number(x)
@@ -371,163 +335,92 @@ window.__ModuleLoader__.load({
       return h('div', { key: id }, row, open ? expandBlock(attr) : null)
     }
 
-    // 'YYYY-MM-DD' -> 'MM-DD'. Anything else yields null so the axis just stays
-    // blank instead of printing 'undefined'.
-    function shortDate(date) {
-      if (typeof date !== 'string') return null
-      var s = date.trim()
-      return s.length >= 10 ? s.slice(5, 10) : null
-    }
+    // The home feed's partition mix as a ring. This replaces the 0-100 composite
+    // index on the panel: a share of a circle needs no formula to read, and
+    // "14 / 19 个分区" answers the other question - how much of the site this feed
+    // touches at all.
+    function categoryBlock(cats) {
+      if (!cats || typeof cats !== 'object') return null
+      var items = Array.isArray(cats.items) ? cats.items : []
+      if (!items.length) return null
 
-    // One polyline over the days that carry a usable cocoon score. A day whose
-    // score is null keeps its slot on the x axis but draws no point, so a hole in
-    // the data stays a hole instead of collapsing into a straight segment.
-    function trendChart(points) {
-      var n = points.length
-      var plotted = []
-      var min = null
-      var max = null
-
-      // The index counts concentration: 21.5 is a score out of 100 and reads as
-      // "low", even though low is the good direction. The panel flips it to a width
-      // (100 - index) so the number grows as the mix gets wider — and so the line
-      // rises when things improve, which is how the eye already reads a trend.
-      points.forEach(function (p, i) {
-        if (!p || typeof p !== 'object') return
-        var raw = num(p.cocoon)
-        if (raw === null) return
-        var v = 100 - raw
-        if (min === null || v < min) min = v
-        if (max === null || v > max) max = v
-        plotted.push({ i: i, value: v, date: shortDate(p.date) })
+      // Seven slices is as many as a 108px ring can carry; the tail becomes one
+      // grey slice with its own legend row, never silently dropped.
+      var slices = []
+      items.slice(0, 6).forEach(function (it, i) {
+        if (!it || typeof it !== 'object') return
+        var share = num(it.share)
+        if (share === null || share <= 0) return
+        var name = typeof it.name === 'string' && it.name !== '' ? it.name : '未分类'
+        slices.push({ name: name, share: share, color: PIE_COLORS[i] })
       })
-      if (!plotted.length) return null
+      if (!slices.length) return null
 
-      // Local domain with 25% headroom: the index lives in a narrow band, so a
-      // fixed 0-100 axis would flatten every real move into a flat line.
-      var span = max - min
-      if (!(span > 0)) span = 1
-      var lo = min - span * 0.25
-      var hi = max + span * 0.25
-
-      function xAt(i) {
-        if (n < 2) return TREND_W / 2
-        return TREND_PAD_X + ((TREND_W - TREND_PAD_X * 2) * i) / (n - 1)
+      var tail = items.slice(6)
+      if (tail.length) {
+        var tailShare = tail.reduce(function (sum, it) {
+          var s = it && typeof it === 'object' ? num(it.share) : null
+          return s === null ? sum : sum + s
+        }, 0)
+        slices.push({ name: '其余 ' + tail.length + ' 个分区', share: tailShare, color: PIE_COLORS[6] })
       }
 
-      function yAt(v) {
-        return TREND_TOP + (1 - (v - lo) / (hi - lo)) * TREND_PLOT_H
-      }
-
-      var marks = []
-
-      if (plotted.length > 1) {
-        var xy = plotted.map(function (p) {
-          return xAt(p.i) + ',' + yAt(p.value)
-        })
-        var baseY = TREND_TOP + TREND_PLOT_H
-        var areaPoints =
-          xAt(plotted[0].i) +
-          ',' +
-          baseY +
-          ' ' +
-          xy.join(' ') +
-          ' ' +
-          xAt(plotted[plotted.length - 1].i) +
-          ',' +
-          baseY
-        marks.push(h('polygon', { key: 'area', points: areaPoints, style: TREND_AREA }))
-        marks.push(h('polyline', { key: 'line', points: xy.join(' '), style: TREND_LINE }))
-      }
-
-      var lastIndex = plotted[plotted.length - 1].i
-      plotted.forEach(function (p) {
-        var x = xAt(p.i)
-        var y = yAt(p.value)
-        var isLast = p.i === lastIndex
-        marks.push(
-          h('circle', {
-            key: 'dot' + p.i,
-            cx: x,
-            cy: y,
-            r: isLast ? 4.5 : 3.5,
-            style: isLast ? TREND_DOT_LAST : TREND_DOT,
-          }),
-        )
-        marks.push(
-          h(
-            'text',
-            { key: 'val' + p.i, x: x, y: y - 8, textAnchor: 'middle', style: TREND_VALUE },
-            Math.round(p.value),
-          ),
-        )
-        if (p.date) {
-          marks.push(
-            h(
-              'text',
-              {
-                key: 'day' + p.i,
-                x: x,
-                y: TREND_TOP + TREND_PLOT_H + 11,
-                textAnchor: isLast ? 'end' : 'middle',
-                style: TREND_LABEL,
-              },
-              p.date,
-            ),
-          )
-        }
+      var acc = 0
+      var stops = slices.map(function (s) {
+        var from = acc
+        acc += s.share
+        return s.color + ' ' + (from * 100).toFixed(2) + '% ' + (acc * 100).toFixed(2) + '%'
       })
 
-      return {
-        count: plotted.length,
-        node: h(
-          'svg',
-          {
-            width: TREND_W,
-            height: TREND_H,
-            viewBox: '0 0 ' + TREND_W + ' ' + TREND_H,
-            style: TREND_SVG,
-            role: 'img',
-            'aria-label': '内容宽度近况',
-          },
-          marks,
-        ),
-      }
-    }
-
-    // Header line + chart, or nothing at all. An old summary has no trend and an
-    // empty one has no usable day; neither may leave a stub behind.
-    function trendSection(trend) {
-      if (!trend || typeof trend !== 'object') return null
-      var points = Array.isArray(trend.points) ? trend.points : []
-      if (!points.length) return null
-      var chart = trendChart(points)
-      if (!chart) return null
-
-      var days = num(trend.days)
-      var title = days !== null && days > 0 ? '近 ' + days + ' 天' : '近 7 天'
-
-      // The newest value sits in the header so the line does not need a legend.
-      var latest = null
-      for (var j = points.length - 1; j >= 0; j--) {
-        var px = points[j]
-        if (px && typeof px === 'object' && num(px.cocoon) !== null) {
-          latest = 100 - num(px.cocoon)
-          break
-        }
-      }
+      var covered = num(cats.covered)
+      var total = num(cats.total)
+      var counter = covered !== null && total !== null ? covered + ' / ' + total + ' 个分区' : null
+      var holeOffset = (PIE_SIZE - PIE_HOLE) / 2 + 'px'
 
       return h(
         'div',
-        { style: TREND_SECTION },
+        { style: PIE_SECTION },
+        h('div', { style: PIE_HEAD }, h('span', null, '分区构成'), h('span', null, counter)),
         h(
           'div',
-          { style: TREND_HEAD },
-          h('span', null, '内容宽度'),
-          h('span', null, latest === null ? title : Math.round(latest) + ' · ' + title),
+          { style: PIE_BODY },
+          h(
+            'div',
+            { style: { position: 'relative', width: PIE_SIZE + 'px', height: PIE_SIZE + 'px', flex: 'none' } },
+            h('div', {
+              style: {
+                width: '100%',
+                height: '100%',
+                borderRadius: '50%',
+                background: 'conic-gradient(' + stops.join(', ') + ')',
+              },
+            }),
+            h('div', {
+              style: {
+                position: 'absolute',
+                top: holeOffset,
+                left: holeOffset,
+                width: PIE_HOLE + 'px',
+                height: PIE_HOLE + 'px',
+                borderRadius: '50%',
+                background: '#1c1e22',
+              },
+            }),
+          ),
+          h(
+            'div',
+            { style: PIE_LEGEND },
+            slices.map(function (s, i) {
+              return h(
+                'div',
+                { key: 'p' + i, style: { display: 'flex', alignItems: 'center', gap: '6px' } },
+                h('span', { style: Object.assign({}, PIE_SWATCH, { background: s.color }) }),
+                h('span', { style: { flex: 1, opacity: 0.85, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.name),
+                h('span', { style: { fontVariantNumeric: 'tabular-nums', opacity: 0.75 } }, pct(s.share)),
+              )
+            }),
+          ),
         ),
-        chart.node,
-        h('div', { style: TREND_NOTE }, trendBasisNote(points)),
       )
     }
 
@@ -711,7 +604,7 @@ window.__ModuleLoader__.load({
             setExpanded(expanded === nextId ? null : nextId)
           })
         }),
-        trendSection(data.trend),
+        categoryBlock(data.categories),
         advice || fallbackLine
           ? h(
               'div',

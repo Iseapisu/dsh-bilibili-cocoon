@@ -289,6 +289,32 @@ function buildFeedFocus(login, guest, themes, amplification) {
 }
 
 // ----------------------------------------------------------------------
+// Partition mix
+// ----------------------------------------------------------------------
+
+// What the home feed is made of, partition by partition. The panel draws this as
+// a pie: a share of a circle needs no definition, whereas the 0-100 composite
+// index needed three paragraphs of formula and still read as a machine score.
+// `covered` against `total` is the second half of the answer - how much of the
+// site's 19 top-level partitions this feed reaches at all.
+function buildCategories(loginRows, metrics) {
+  if (!metrics || typeof metrics.categoryCounts !== 'function') return null;
+  const counts = metrics.categoryCounts(loginRows);
+  const pairs = [...counts.entries()]
+    .filter(([name, n]) => typeof name === 'string' && name !== '' && n > 0)
+    .sort((a, b) => b[1] - a[1]);
+  const units = pairs.reduce((sum, [, n]) => sum + n, 0);
+  if (!units) return null;
+
+  return {
+    covered: pairs.length,
+    total: metrics.MAX_CATEGORIES ?? 19,
+    units,
+    items: pairs.map(([name, n]) => ({ name, n, share: pct(n, units) })),
+  };
+}
+
+// ----------------------------------------------------------------------
 // Breakout picks
 // ----------------------------------------------------------------------
 
@@ -724,10 +750,13 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
   }
 
   // Trend only needs the score function; if metrics.js is missing the trend
-  // line loses its cocoon values but the rest of the summary still works.
+  // line loses its cocoon values but the rest of the summary still works. The
+  // partition mix below reuses the same module's categoryCounts.
   let cocoon = null;
+  let metricsApi = null;
   try {
-    cocoon = (await import('../../src/metrics.js')).cocoonScore;
+    metricsApi = await import('../../src/metrics.js');
+    cocoon = metricsApi.cocoonScore;
   } catch {
     cocoon = null;
   }
@@ -803,6 +832,17 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
       feedFocusError = String(err && err.message ? err.message : err);
     }
 
+    // The partition pie. Same contract as the other enhancements: missing block
+    // instead of a dark panel.
+    let categories = null;
+    let categoriesError = null;
+    try {
+      categories = buildCategories(loginRows, metricsApi);
+    } catch (err) {
+      categories = null;
+      categoriesError = String(err && err.message ? err.message : err);
+    }
+
     // Breakout picks: the guest-only videos whose themes the home feed barely
     // carries. Another enhancement - an empty block, never a dark panel.
     let breakout = { candidates: 0, items: [] };
@@ -848,12 +888,14 @@ export async function buildSummary(dbPath = process.env.COCOON_DB || defaultDbPa
       amplification: amplification.slice(0, 6),
       headline,
       feedFocus,
+      categories,
       breakout,
       attribution,
       advice,
       trend,
       ...(attributionError === null ? {} : { attributionError }),
       ...(feedFocusError === null ? {} : { feedFocusError }),
+      ...(categoriesError === null ? {} : { categoriesError }),
       ...(breakoutError === null ? {} : { breakoutError }),
       ...(trendError === null ? {} : { trendError }),
     };

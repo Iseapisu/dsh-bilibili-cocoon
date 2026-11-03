@@ -202,6 +202,7 @@ node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分�
 | `amplification` | array | 最多 6 条 `{ id, name, loginShare, guestShare, loginShareDedup, guestShareDedup, historyShare, ratio, ratioDedup }`，按 `loginShare − guestShare` 降序 |
 | `headline` | object \| null | `{ id, name, ratio, ratioDedup }`——按上面那个顺序，第一条 `ratio > 1.2` 的主题 |
 | `feedFocus` | object \| null | 首页流由什么构成——`{ top, top3Share, effectiveThemes, totalThemes, units, repeatRate }`，见[下文](#feedfocus) |
+| `categories` | object \| null | 首页流的分区构成——`{ covered, total, units, items }`，见[下文](#categories) |
 | `attribution` | array | 最多 3 个主题，下钻到 UP 主和视频——见[下文](#attribution) |
 | `advice` | object \| null | 一句确定性规则生成的建议，不是模型输出——见[下文](#advice) |
 | `trend` | object | 最近 7 天——见[下文](#trend) |
@@ -219,6 +220,19 @@ node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分�
 `headline` 认的是「份额差」不是「倍数」。2026-11-02 排第一的是 AI / 大模型：
 行数口径占已分类登录流 24.4%、游客基线 9.4%（`ratio` 2.60），去重口径 24.4% / 13.3%（`ratioDedup` 1.83）。
 两个排序可能不一致——一个主题可以倍数更大、而另一个份额差更大——这个字段固定按份额差走。
+
+### `categories`
+
+首页流的分区构成——当天登录流里出现的每个一级分区一条，按条数降序。面板画的那个饼就是它；`categoryCounts` 缺失时整个字段是 `null`，不会给一个空圆环。
+
+| 字段 | 含义 |
+|---|---|
+| `covered` | 这份流碰到的几个一级分区 |
+| `total` | 一级分区总数（19） |
+| `units` | 构成这份分布的行数，即每个 `share` 分母 |
+| `items` | 每个分区 `{ name, n, share }`，按 `n` 降序、不截断；面板只画七段（前六 + 其余合并） |
+
+分区名来自 `parentOf(tname)`，`tid` 在 `src/tid-region.json` 里缺项的行走进 `其他`，所以列表里的 `其他` 是映射缺口而不是一个分区。2026-11-03 那天 84 行登录流覆盖了 14 个分区、最高份额 14.3%——面板要让人看出来的就是这种「摊得平」。
 
 ### `feedFocus`
 

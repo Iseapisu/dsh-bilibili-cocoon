@@ -186,14 +186,16 @@ node tools/trend.mjs                  # multi-day trend: index / entropy / uploa
 
 ## DSH panel plugin
 
-`plugin/` is a DeepSeek Harness client plugin. It injects a pill into the conversation header (`conversation.session.header.actions`, `order: 13`) right next to the bilibili plugin's own pill. The pill reads `AI 27%` — the leading theme and its share of the home feed — because a share stands on its own while a ratio only means something once its baseline is explained. Expanding it gives that number, a three-column comparison, the 7-day line, one line of advice, and what the guest feed carries that the home feed never does:
+`plugin/` is a DeepSeek Harness client plugin. It injects a pill into the conversation header (`conversation.session.header.actions`, `order: 13`) right next to the bilibili plugin's own pill. The pill reads `AI 27%` — the leading theme and its share of the home feed — because a share stands on its own while a ratio only means something once its baseline is explained. Expanding it gives that number, a three-column comparison, a partition pie, one line of advice, and what the guest feed carries that the home feed never does:
 
 ```
 theme                newcomer   fed to you   you watch
 AI / LLM                13.3%  →   24.4%    ←  historyShare
 ```
 
-Both percentages are shares of **distinct videos**, the primary measure; a summary from before the dedup fields falls back to row shares. The row measure is still served, and on 2026-11-02 reads 9.4 % → 24.4 % (2.60×) — the pair earlier versions of this README printed. `you watch` is the theme's share of the history sample: a third distribution, not a third copy of the same ratio, so it is not restated here. The trend block plots `100 − index` and labels it 内容宽度: the index grows as the mix narrows, so the panel flips it — higher means wider, and the line rises when things improve (21.5 reads as 79). It still names the `basis` it was computed from in one short line; the long caveat that used to sit under it lives here instead.
+Both percentages are shares of **distinct videos**, the primary measure; a summary from before the dedup fields falls back to row shares. The row measure is still served, and on 2026-11-02 reads 9.4 % → 24.4 % (2.60×) — the pair earlier versions of this README printed. `you watch` is the theme's share of the history sample: a third distribution, not a third copy of the same ratio, so it is not restated here.
+
+The pie replaced a 0–100 composite score that had been on the panel. The score was a weighted mix of partition entropy, HHI and uploader Gini — correct as a metric, unreadable as a panel element: reading it required the formula, and the scale is so dull that almost every sample lands in the same bucket. The pie needs no formula. It shows what share each top-level partition holds, and `14 / 19 个分区` answers the other question the score was standing in for: how much of the site this feed reaches at all. On 2026-11-03 that is 14 partitions with no single one above 14.3 % — the shape says "spread out" faster than any number did.
 
 The host half only reads `cocoon.db` and serves `GET /dsh-bilibili-cocoon/summary`; it never writes, never polls, and returns `{ ok: false, error }` instead of throwing — a failing plugin takes the whole GUI down with it.
 
@@ -213,17 +215,31 @@ It is a **separate package on purpose**: `@seiuna/dsh-bilibili-plugin` is shippe
 | `amplification` | array | up to 6 `{ id, name, loginShare, guestShare, loginShareDedup, guestShareDedup, historyShare, ratio, ratioDedup }`, sorted by `loginShare − guestShare` descending |
 | `headline` | object \| null | `{ id, name, ratio, ratioDedup }` — the first theme in that order with `ratio > 1.2` |
 | `feedFocus` | object \| null | what the home feed is made of — `{ top, top3Share, effectiveThemes, totalThemes, units, repeatRate }`, [below](#feedfocus) |
+| `categories` | object \| null | the home feed's partition mix — `{ covered, total, units, items }`, [below](#categories) |
 | `attribution` | array | up to 3 themes drilled down to uploaders and videos — [below](#attribution) |
 | `advice` | object \| null | one sentence from a fixed rule, never a model call — [below](#advice) |
 | `trend` | object | the last 7 days — [below](#trend) |
 | `breakout` | object | what the guest feed carried that the home feed did not — [below](#breakout) |
-| `attributionError`, `feedFocusError`, `trendError` | string | present only when that block failed; the rest of the body is still valid |
+| `attributionError`, `feedFocusError`, `categoriesError`, `trendError` | string | present only when that block failed; the rest of the body is still valid |
 
 `share` and `coverage` are fractions of **classified** items, not of all rows — items the classifier cannot place are excluded from the denominator (see [Theme concentration](#theme-concentration-diagnostic)). Shares carry 4 decimals, `ratio` 2.
 
 Every theme row carries two ratios over two denominators. `loginShare` / `guestShare` count **rows** over the classified row totals, and `ratio = loginShare / guestShare`. `loginShareDedup` / `guestShareDedup` are the same two shares over the **deduplicated** classified counts, and `ratioDedup = loginShareDedup / guestShareDedup`. Quote the dedup one: the guest feed is resampled from a much smaller pool (82 rows = 38 videos on 2026-11-02), so the row measure inflates every ratio built on it. `ratio` and `ratioDedup` are both `null` when the guest side has no item for that theme. `historyShare` always comes from the row measure — it is the account's own history, not a resampled feed.
 
 `headline` follows the amplification order, not the ratio. On 2026-11-02 that puts AI / 大模型 on top: 24.4 % of the classified logged-in feed against 9.4 % of the guest baseline on rows (`ratio` 2.60), and 24.4 % against 13.3 % on distinct videos (`ratioDedup` 1.83). The two orderings can disagree — a theme can have the larger ratio while another has the larger gap — and this field deliberately follows the gap.
+
+### `categories`
+
+The home feed's partition mix — one entry per top-level partition present in the logged-in feed that day, sorted by count descending. This is what the panel draws as a pie; a missing `categoryCounts` yields `null` rather than an empty ring.
+
+| field | meaning |
+|---|---|
+| `covered` | how many of the top-level partitions the home feed touches |
+| `total` | size of the partition vocabulary (19) |
+| `units` | rows behind the mix — the denominator every `share` divides into |
+| `items` | `{ name, n, share }` per partition, sorted by `n` descending, untruncated; the panel draws seven wedges — the top six and the rest combined |
+
+Partition names come from `parentOf(tname)`, and a row whose `tid` is missing from `src/tid-region.json` lands in `其他`, so `其他` in this list marks a mapping gap rather than a partition. On 2026-11-03 the 84-row login feed covered 14 partitions with no share above 14.3 % — that flatness is the shape the panel is trying to make legible.
 
 ### `feedFocus`
 
