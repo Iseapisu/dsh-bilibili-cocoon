@@ -28,13 +28,30 @@ window.__ModuleLoader__.load({
       '  animation-delay: var(--seg-delay, 0ms);',
       '  cursor: pointer;',
       '}',
-      '@keyframes cocoon-row-in {',
-      '  from { opacity: 0; transform: translateX(-8px) }',
-      '  to { opacity: 1; transform: translateX(0) }',
+      '@keyframes cocoon-tag-in {',
+      '  from { opacity: 0; transform: translateX(6px) scale(.96) }',
+      '  to { opacity: 1; transform: none }',
       '}',
-      '.cocoon-row { animation: cocoon-row-in .42s ease-out both; cursor: pointer }',
+      '@keyframes cocoon-glyph-in {',
+      '  from { opacity: 0; transform: rotate(-140deg) scale(.35) }',
+      '  to { opacity: 1; transform: rotate(0) scale(1) }',
+      '}',
+      '.cocoon-tag {',
+      '  animation: cocoon-tag-in .42s cubic-bezier(.22,.85,.3,1) backwards;',
+      '  animation-delay: var(--tag-delay, 0ms);',
+      '  cursor: pointer;',
+      '}',
+      '.cocoon-tag-glyph {',
+      '  transform-box: fill-box;',
+      '  transform-origin: center;',
+      '  animation: cocoon-glyph-in .5s cubic-bezier(.22,.85,.3,1) both;',
+      '  animation-delay: var(--tag-delay, 0ms);',
+      '}',
+      '.cocoon-tag > svg { transition: transform .18s cubic-bezier(.3,1.5,.5,1) }',
+      '.cocoon-tag:hover > svg, .cocoon-tag.is-hot > svg { transform: scale(1.28) rotate(6deg) }',
       '@media (prefers-reduced-motion: reduce) {',
-      '  .cocoon-seg, .cocoon-row { animation: none }',
+      '  .cocoon-seg, .cocoon-tag, .cocoon-tag-glyph { animation: none }',
+      '  .cocoon-tag > svg { transform: none }',
       '}',
     ].join('\n')
 
@@ -123,8 +140,18 @@ window.__ModuleLoader__.load({
       marginBottom: '8px',
     })
     var PIE_BODY = { display: 'flex', alignItems: 'center', gap: '16px' }
-    var PIE_LEGEND = { flex: 1, minWidth: 0, fontSize: '11px', lineHeight: '1.8' }
-    var PIE_SWATCH = { width: '8px', height: '8px', borderRadius: '2px', flex: 'none' }
+    var PIE_LEGEND = {
+      flex: 1,
+      minWidth: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '4px',
+      fontSize: '11px',
+      lineHeight: '1.8',
+    }
+    // Tags flow and wrap by their own content width; a full-width row made a
+    // 14-partition legend read as a table instead of a set of tags.
+    var TAG_FLOW = { display: 'flex', flexWrap: 'wrap', gap: '4px', minWidth: 0 }
 
     function pct(x) {
       var n = Number(x)
@@ -403,10 +430,15 @@ window.__ModuleLoader__.load({
     // read as the account's top category, which is backwards. Colours are generated
     // instead of listed because a 14-slice ring needs 14 of them: one hue step per
     // sector with alternating lightness, so neighbours differ in two ways at once.
+    // sliceHue is the single source of that hue: the legend tag derives its tint
+    // from the same number, so a tag and its sector always read as the same colour.
+    function sliceHue(i, n) {
+      return Math.round(((i * 360) / Math.max(n, 1) + 200) % 360)
+    }
+
     function sliceColor(i, n) {
-      var hue = Math.round(((i * 360) / Math.max(n, 1) + 200) % 360)
       var light = i % 2 === 0 ? 62 : 51
-      return 'hsl(' + hue + ', 46%, ' + light + '%)'
+      return 'hsl(' + sliceHue(i, n) + ', 46%, ' + light + '%)'
     }
 
     var LEGEND_COLLAPSED = 3
@@ -435,7 +467,12 @@ window.__ModuleLoader__.load({
         var share = num(it.share)
         if (share === null || share <= 0) return
         var name = typeof it.name === 'string' && it.name !== '' ? it.name : '未分类'
-        slices.push({ name: name, share: share, color: sliceColor(slices.length, items.length) })
+        slices.push({
+          name: name,
+          share: share,
+          hue: sliceHue(slices.length, items.length),
+          color: sliceColor(slices.length, items.length),
+        })
       })
       if (!slices.length) return null
 
@@ -522,47 +559,89 @@ window.__ModuleLoader__.load({
           ),
           h(
             'div',
-            { style: PIE_LEGEND },
-            rows.map(function (s, i) {
-              var isHot = hovered === i
-              var dimmed = hovered !== null && !isHot
-              return h(
-                'div',
-                {
-                  key: 'p' + i,
-                  className: 'cocoon-row',
-                  style: {
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    animationDelay: 140 + i * 30 + 'ms',
-                    opacity: dimmed ? 0.4 : 1,
-                    transition: 'opacity 150ms ease',
-                  },
-                  onMouseEnter: function () {
-                    setHovered(i)
-                  },
-                  onMouseLeave: function () {
-                    setHovered(null)
-                  },
-                },
-                h('span', { style: Object.assign({}, PIE_SWATCH, { background: s.color }) }),
-                h(
-                  'span',
+            // Keyed on `expanded` as well, so folding the legend out remounts the
+            // tags and their stagger replays, the same way the ring replays its
+            // sectors.
+            { key: expanded ? 'open' : 'closed', style: PIE_LEGEND },
+            h(
+              'div',
+              { style: TAG_FLOW },
+              rows.map(function (s, i) {
+                var isHot = hovered === i
+                var dimmed = hovered !== null && !isHot
+                var hue = s.hue
+                return h(
+                  'div',
                   {
+                    key: 'p' + i,
+                    className: isHot ? 'cocoon-tag is-hot' : 'cocoon-tag',
                     style: {
-                      flex: 1,
-                      opacity: 0.85,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      flex: '0 0 auto',
+                      maxWidth: '100%',
+                      padding: '2px 7px 2px 3px',
+                      borderRadius: '999px',
+                      background: 'hsla(' + hue + ', 48%, 52%, ' + (isHot ? 0.36 : 0.2) + ')',
+                      border: '1px solid hsla(' + hue + ', 48%, 60%, ' + (isHot ? 0.9 : 0.42) + ')',
+                      '--tag-delay': 140 + i * 30 + 'ms',
+                      opacity: dimmed ? 0.4 : 1,
+                      transition: 'background 150ms ease, border-color 150ms ease, opacity 150ms ease',
+                    },
+                    onMouseEnter: function () {
+                      setHovered(i)
+                    },
+                    onMouseLeave: function () {
+                      setHovered(null)
                     },
                   },
-                  s.name,
-                ),
-                h('span', { style: { fontVariantNumeric: 'tabular-nums', opacity: 0.75 } }, pct(s.share)),
-              )
-            }),
+                  // The 16px glyph is the same sector again, in the same fill
+                  // string, so its colour can never drift from the ring.
+                  h(
+                    'svg',
+                    {
+                      width: 16,
+                      height: 16,
+                      viewBox: '0 0 16 16',
+                      'aria-hidden': 'true',
+                      style: { flex: 'none', display: 'block' },
+                    },
+                    h(
+                      'g',
+                      { className: 'cocoon-tag-glyph' },
+                      h('path', { d: arcPath(8, 8, 6.6, 3.0, 0, s.share * 360), fill: s.color }),
+                    ),
+                  ),
+                  h(
+                    'span',
+                    {
+                      style: {
+                        minWidth: 0,
+                        fontSize: '11px',
+                        color: 'hsl(' + hue + ', 60%, 84%)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      },
+                    },
+                    s.name,
+                  ),
+                  h(
+                    'span',
+                    {
+                      style: {
+                        flex: 'none',
+                        color: 'hsl(' + hue + ', 45%, 90%)',
+                        opacity: 0.75,
+                        fontVariantNumeric: 'tabular-nums',
+                      },
+                    },
+                    pct(s.share),
+                  ),
+                )
+              }),
+            ),
             collapsed
               ? h(
                   'div',
@@ -653,11 +732,9 @@ window.__ModuleLoader__.load({
       var items = Array.isArray(breakout.items) ? breakout.items : []
       if (!items.length) return null
 
-      // One label, no lead-in sentence: the list is self-describing once the
-      // uploader and theme sit under each title.
-      var candidates = num(breakout.candidates)
-      var head = '路人能刷到，你刷不到'
-      if (candidates !== null && candidates > 0) head += '（' + candidates + ' 条）'
+      // One fixed label, no lead-in sentence and no item count: the list is
+      // self-describing once the uploader and theme sit under each title.
+      var head = '破茧推荐'
 
       return h(
         'div',
