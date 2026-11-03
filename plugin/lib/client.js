@@ -360,7 +360,14 @@ window.__ModuleLoader__.load({
         h(
           'span',
           { key: 'name', style: { display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 } },
-          canExpand ? h('span', { style: { opacity: 0.6, flex: 'none' } }, open ? '▾' : '▸') : null,
+          // A fixed-width slot on every row, so the theme chips line up whether or
+          // not the row has attribution data. Rows without one stay blank and are
+          // not clickable — the slot is spacing, not an affordance.
+          h(
+            'span',
+            { style: { flex: 'none', width: '10px', textAlign: 'center', opacity: 0.6 } },
+            canExpand ? (open ? '▾' : '▸') : null,
+          ),
           // No id and no name: nothing to colour by, so it stays plain text. A
           // missing id with a real name still gets its name's fixed hue.
           themeName === null && id === ''
