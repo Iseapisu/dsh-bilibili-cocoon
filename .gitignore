@@ -4,6 +4,7 @@ data/
 *.db-journal
 report.md
 report-*.md
+demo-report.md
 .env
 cookie*.txt
 bilibili-vault.json

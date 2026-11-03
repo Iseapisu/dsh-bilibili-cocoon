@@ -38,12 +38,14 @@ score 参数：
   --db <path>            SQLite 数据库路径（默认 ${DEFAULT_DB_PATH}）
   --days <n>             回看天数，1..3650（默认 7）
   --json                 只输出原始 JSON，便于管道处理
+  --demo                 离线演示：用 test/fixtures 造快照（不联网、不读 cookie、不碰 ${DEFAULT_DB_PATH}）
   -h, --help             打印本帮助
 
 report 参数：
   --db <path>            SQLite 数据库路径（默认 ${DEFAULT_DB_PATH}）
   --days <n>             回看天数，1..3650（默认 7）
-  --out <path>           报告输出路径（默认 ${DEFAULT_REPORT_PATH}；传 - 表示只打印不写文件）
+  --out <path>           报告输出路径（默认 ${DEFAULT_REPORT_PATH}；--demo 默认 demo-report.md；传 - 表示只打印）
+  --demo                 离线演示：同上，报告里会标注这是 demo 数据
   -h, --help             打印本帮助
 
 exposure 参数：
@@ -59,7 +61,16 @@ exposure 参数：
   · 未提供 cookie 时按游客模式采集：历史记录接口需要登录，失败会被跳过（不致命）。
   · 参数同时支持 "--key value" 与 "--key=value" 两种写法。
   · collect 按 (日期, 来源) 整体覆盖：同一天重采会替换该来源的旧行，不会残留旧 bvid。
+  · --demo 走同一条 score / report 路径，数据来自 test/fixtures，写进内存库（:memory:）：不联网、不读 cookie、不读写 ${DEFAULT_DB_PATH}。
 `;
+
+// Offline demo: the same snapshot → score → report pipeline, seeded from the
+// repository fixtures into an in-memory database. Nothing touches the user's
+// data/cocoon.db and nothing hits the network.
+const DEMO_DATE = '2026-11-03';
+const DEMO_NOTE = 'demo 数据：test/fixtures，不是你的账号';
+const DEMO_DB = ':memory:';
+const DEMO_REPORT_PATH = 'demo-report.md';
 
 class CliError extends Error {
   constructor(message, exitCode = 1, hint = '') {
@@ -79,7 +90,7 @@ function usageError(message, hint = '') {
 // ----------------------------------------------------------------------
 
 const VALUE_FLAGS = new Set(['db', 'limit', 'days', 'out', 'cookie-file']);
-const BOOL_FLAGS = new Set(['json', 'login', 'help', 'no-enrich']);
+const BOOL_FLAGS = new Set(['json', 'login', 'help', 'no-enrich', 'demo']);
 
 function parseArgs(argv) {
   const parsed = { command: '', positional: [], flags: {}, help: false };
@@ -190,6 +201,36 @@ function resolveCookie(flags) {
   if (fileCookie) return { cookie: fileCookie, origin };
   if (envCookie) return { cookie: envCookie, origin: '环境变量 BILI_COOKIE' };
   return { cookie: '', origin: '' };
+}
+
+// `--demo` data comes from the repo's fixtures, so it works from a fresh clone
+// with no cookie, no database and no network.
+function loadFixture(name) {
+  const url = new URL(`../test/fixtures/${name}`, import.meta.url);
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(url, 'utf8'));
+  } catch (err) {
+    throw new CliError(
+      `无法读取 demo 数据 ${name}：${err?.message ?? err}`,
+      1,
+      'demo 需要仓库里的 test/fixtures，检查文件是否被删掉',
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new CliError(`demo 数据 ${name} 不是数组`, 1, '检查 test/fixtures 是否被改动');
+  }
+  return parsed;
+}
+
+function seedDemoSnapshot(storeMod, store) {
+  const feed = loadFixture('feed.json');
+  const ranking = loadFixture('ranking.json');
+  const saved = storeMod.saveSnapshot(store, DEMO_DATE, feed, [], ranking);
+  if (saved.rcmd === 0) {
+    throw new CliError('demo 数据里没有可用的推荐流条目', 1, '检查 test/fixtures/feed.json');
+  }
+  return saved;
 }
 
 function normalizeFetchResult(raw, source) {
@@ -434,8 +475,11 @@ async function cmdCollect(flags) {
 // ----------------------------------------------------------------------
 
 async function computeScore(flags) {
-  const dbPath = flags.db || DEFAULT_DB_PATH;
+  const demo = flags.demo === true;
   const days = intFlag(flags, 'days', 7, 1, 3650);
+  // Demo never opens (or creates) the user's database: the snapshot lives in an
+  // in-memory store seeded from test/fixtures.
+  const dbPath = demo ? DEMO_DB : flags.db || DEFAULT_DB_PATH;
 
   const storeMod = await importModule('./store.js', 'src/store.js');
   const store = storeMod.openStore(dbPath);
@@ -443,6 +487,7 @@ async function computeScore(flags) {
   let tagMap = new Map();
   let themeMap = new Map();
   try {
+    if (demo) seedDemoSnapshot(storeMod, store);
     snapshot = storeMod.listSnapshots(store, days);
     if (typeof storeMod.listVideoTags === 'function') tagMap = storeMod.listVideoTags(store);
     if (typeof storeMod.listTagThemes === 'function') themeMap = storeMod.listTagThemes(store);
@@ -521,7 +566,8 @@ async function computeScore(flags) {
   return {
     result,
     context: {
-      dbPath: resolve(dbPath),
+      dbPath: demo ? `${DEMO_DB}（${DEMO_NOTE}）` : resolve(dbPath),
+      demo,
       days,
       date: latest,
       feed: feedItems,
@@ -630,6 +676,7 @@ async function cmdScore(flags) {
     console.log(JSON.stringify(result, jsonReplacer, 2));
     return;
   }
+  if (flags.demo) console.log(`数据来源：${DEMO_NOTE}`);
   printScore(result, context);
 }
 
@@ -658,19 +705,22 @@ async function cmdReport(flags) {
   }
 
   const text = markdown.endsWith('\n') ? markdown : `${markdown}\n`;
-  const out = flags.out ?? DEFAULT_REPORT_PATH;
+  // The demo marker is the first line of the file, so a pasted report never
+  // reads like a measurement of the person who ran the command.
+  const body = flags.demo ? `> ${DEMO_NOTE}\n\n${text}` : text;
+  const out = flags.out ?? (flags.demo ? DEMO_REPORT_PATH : DEFAULT_REPORT_PATH);
 
   if (out !== '-') {
     const outPath = resolve(out);
     mkdirSync(dirname(outPath), { recursive: true });
-    writeFileSync(outPath, text, 'utf8');
+    writeFileSync(outPath, body, 'utf8');
     console.log(`报告已写入：${outPath}`);
   } else {
     console.log('报告（未写文件，--out - 仅打印）');
   }
 
   console.log('');
-  process.stdout.write(text);
+  process.stdout.write(body);
 }
 
 // ----------------------------------------------------------------------
@@ -695,6 +745,11 @@ async function main(argv = process.argv.slice(2)) {
   if (!run) {
     console.error(`错误: 未知命令 "${parsed.command}"`);
     process.stdout.write(USAGE);
+    return 1;
+  }
+
+  if (parsed.flags.demo && parsed.command !== 'score' && parsed.command !== 'report') {
+    console.error('错误: --demo 只能和 score / report 一起用');
     return 1;
   }
 
