@@ -71,9 +71,36 @@ window.__ModuleLoader__.load({
       '  animation: cocoon-breakout-in .3s ease-out backwards;',
       '  animation-delay: var(--breakout-delay, 0ms);',
       '}',
+      // The header entry is icon-only now, so the old badge text hangs left of it
+      // on hover. Absolutely positioned so the icon's footprint never changes and
+      // the neighbouring header buttons never shift.
+      '.cocoon-entry-label {',
+      '  position: absolute;',
+      '  right: 100%;',
+      '  top: 50%;',
+      '  margin-right: 6px;',
+      '  padding: 2px 7px;',
+      '  border-radius: 6px;',
+      '  border: 1px solid rgba(255, 255, 255, 0.12);',
+      '  background: rgba(28, 30, 34, 0.98);',
+      '  color: inherit;',
+      '  font-size: 11px;',
+      '  line-height: 1.45;',
+      '  white-space: nowrap;',
+      '  pointer-events: none;',
+      '  opacity: 0;',
+      '  transform: translate(4px, -50%);',
+      '  transition: opacity 140ms ease, transform 140ms ease;',
+      '}',
+      '.cocoon-entry:hover + .cocoon-entry-label,',
+      '.cocoon-entry:focus-visible + .cocoon-entry-label {',
+      '  opacity: 1;',
+      '  transform: translate(0, -50%);',
+      '}',
       '@media (prefers-reduced-motion: reduce) {',
       '  .cocoon-seg, .cocoon-tag, .cocoon-tag-glyph, .cocoon-chip, .cocoon-chip-dot, .cocoon-breakout-item { animation: none }',
       '  .cocoon-tag > svg { transform: none }',
+      '  .cocoon-entry-label { transform: translate(0, -50%); transition: opacity 140ms ease }',
       '}',
     ].join('\n')
 
@@ -122,6 +149,23 @@ window.__ModuleLoader__.load({
       cursor: 'pointer',
       opacity: 0.78,
     }
+
+    // The entry is icon-only: fixed 26x24 so the header row never reflows. No border
+    // - at this size a 1px frame around a 18px glyph reads as a box, and the icon
+    // should be the whole mark. The panel state is carried by the button's
+    // background instead of the text it used to have.
+    var ENTRY_BUTTON_STYLE = Object.assign({}, PILL_STYLE, {
+      width: '26px',
+      height: '24px',
+      padding: 0,
+      border: 'none',
+      background: 'transparent',
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      lineHeight: 1,
+    })
+    var ENTRY_ACTIVE_STYLE = { background: 'rgba(255, 255, 255, 0.12)' }
 
     var NUM = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' }
     var DIM = { opacity: 0.6 }
@@ -1023,14 +1067,45 @@ window.__ModuleLoader__.load({
           'button',
           {
             type: 'button',
-            title: badge.tooltip,
+            className: 'cocoon-entry',
+            'aria-label': badge.tooltip,
+            'aria-expanded': open ? 'true' : 'false',
             onClick: function () {
               setOpen(!open)
             },
-            style: PILL_STYLE,
+            style: Object.assign({}, ENTRY_BUTTON_STYLE, open ? ENTRY_ACTIVE_STYLE : null),
           },
-          open ? label + ' ∧' : label,
+          // A cocoon breaking open: the lower shell and a cap lifted clear of it,
+          // with a small head in the seam between the two. Both pieces are filled
+          // and the break is the gap between them, because at 18px a 1.3px line
+          // drawing of the same idea compresses into a blob with a stem.
+          h(
+            'svg',
+            {
+              width: 18,
+              height: 18,
+              viewBox: '0 0 16 16',
+              'aria-hidden': 'true',
+              style: { display: 'block' },
+            },
+            h('path', {
+              d: 'M2.6 7.4 L4.2 8.5 L5.8 7.2 L7.4 8.5 L9.0 7.2 L10.6 8.5 L12.2 7.4 C13.1 9.4 11.9 11.9 9.4 12.9 C8.3 13.4 6.7 13.4 5.6 12.9 C3.1 11.9 1.9 9.4 2.6 7.4 Z',
+              fill: 'currentColor',
+            }),
+            h('path', {
+              d: 'M3.0 6.0 L4.5 7.0 L6.0 5.8 L7.5 7.0 L9.0 5.8 L10.5 7.0 L11.9 6.0 C11.2 4.0 9.6 2.9 7.4 2.9 C5.2 2.9 3.7 4.0 3.0 6.0 Z',
+              fill: 'currentColor',
+            }),
+            h('circle', { cx: 11.4, cy: 5.2, r: 1.5, fill: 'currentColor' }),
+            h('path', {
+              d: 'M9.6 6.6 L11.2 5.4',
+              stroke: 'currentColor',
+              strokeWidth: 1.9,
+              strokeLinecap: 'round',
+            }),
+          ),
         ),
+        h('span', { className: 'cocoon-entry-label' }, label),
         open
           ? h(
               'div',
