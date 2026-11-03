@@ -111,7 +111,6 @@ window.__ModuleLoader__.load({
     var PIE_SIZE = 108
     var PIE_R = 54
     var PIE_R_INNER = 32
-    var PIE_COLORS = ['#8ab4f8', '#f2a65a', '#7bd88f', '#e08fd0', '#f7d060', '#7fd1d8', '#9aa4b2']
     var PIE_SECTION = {
       marginTop: '10px',
       borderTop: '1px solid rgba(255,255,255,0.1)',
@@ -399,41 +398,46 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // Every partition that actually appears gets its own sector, so there is no
+    // merged grey "rest" wedge — that wedge was the largest shape on the ring and
+    // read as the account's top category, which is backwards. Colours are generated
+    // instead of listed because a 14-slice ring needs 14 of them: one hue step per
+    // sector with alternating lightness, so neighbours differ in two ways at once.
+    function sliceColor(i, n) {
+      var hue = Math.round(((i * 360) / Math.max(n, 1) + 200) % 360)
+      var light = i % 2 === 0 ? 62 : 51
+      return 'hsl(' + hue + ', 46%, ' + light + '%)'
+    }
+
+    var LEGEND_COLLAPSED = 3
+
     // The home feed's partition mix as a donut. SVG rather than a conic-gradient
     // because each sector has to answer the pointer on its own: hovering a slice
-    // dims the other six and swaps the label inside the hole, which is the reading
-    // a pie exists for. A conic-gradient is a single background image — it can only
-    // animate as one piece and cannot tell which slice the cursor is over.
+    // dims the others and names it in the hole. A conic-gradient is one background
+    // image — it cannot tell which sector the cursor is over.
     function CategoryBlock(props) {
       var hoverState = React.useState(null)
       var hovered = hoverState[0]
       var setHovered = hoverState[1]
+
+      var openState = React.useState(false)
+      var expanded = openState[0]
+      var setExpanded = openState[1]
 
       var cats = props.cats
       if (!cats || typeof cats !== 'object') return null
       var items = Array.isArray(cats.items) ? cats.items : []
       if (!items.length) return null
 
-      // Seven sectors is as many as a 108px ring can carry; the tail becomes one
-      // grey slice with its own legend row, never silently dropped.
       var slices = []
-      items.slice(0, 6).forEach(function (it, i) {
+      items.forEach(function (it) {
         if (!it || typeof it !== 'object') return
         var share = num(it.share)
         if (share === null || share <= 0) return
         var name = typeof it.name === 'string' && it.name !== '' ? it.name : '未分类'
-        slices.push({ name: name, share: share, color: PIE_COLORS[i] })
+        slices.push({ name: name, share: share, color: sliceColor(slices.length, items.length) })
       })
       if (!slices.length) return null
-
-      var tail = items.slice(6)
-      if (tail.length) {
-        var tailShare = tail.reduce(function (sum, it) {
-          var s = it && typeof it === 'object' ? num(it.share) : null
-          return s === null ? sum : sum + s
-        }, 0)
-        slices.push({ name: '其余 ' + tail.length + ' 个分区', share: tailShare, color: PIE_COLORS[6] })
-      }
 
       var covered = num(cats.covered)
       var total = num(cats.total)
@@ -441,6 +445,8 @@ window.__ModuleLoader__.load({
       var hot = hovered !== null && slices[hovered] ? slices[hovered] : null
       var cx = PIE_SIZE / 2
       var acc = 0
+      var rows = expanded ? slices : slices.slice(0, LEGEND_COLLAPSED)
+      var collapsed = slices.length > LEGEND_COLLAPSED
 
       return h(
         'div',
@@ -452,9 +458,12 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: { position: 'relative', width: PIE_SIZE + 'px', height: PIE_SIZE + 'px', flex: 'none' } },
+            // Keyed on `expanded` so toggling the legend remounts the ring and the
+            // sector entrance replays with it — the chart answers the click too.
             h(
               'svg',
               {
+                key: expanded ? 'open' : 'closed',
                 width: PIE_SIZE,
                 height: PIE_SIZE,
                 viewBox: '0 0 ' + PIE_SIZE + ' ' + PIE_SIZE,
@@ -473,11 +482,11 @@ window.__ModuleLoader__.load({
                   fill: s.color,
                   className: 'cocoon-seg',
                   style: {
-                    '--seg-delay': i * 55 + 'ms',
+                    '--seg-delay': i * 38 + 'ms',
                     '--seg-center': cx + 'px',
-                    opacity: dimmed ? 0.32 : 1,
-                    stroke: isHot ? '#ffffff' : 'none',
-                    strokeWidth: isHot ? 1.5 : 0,
+                    opacity: dimmed ? 0.3 : 1,
+                    stroke: isHot ? '#ffffff' : 'rgba(28, 30, 34, 0.55)',
+                    strokeWidth: isHot ? 1.5 : 0.5,
                     transition: 'opacity 150ms ease, stroke 150ms ease',
                   },
                   onMouseEnter: function () {
@@ -507,16 +516,14 @@ window.__ModuleLoader__.load({
                   lineHeight: 1.25,
                 },
               },
-              hot
-                ? h('span', { style: { fontSize: '11px', opacity: 0.85 } }, hot.name)
-                : h('span', { style: { fontSize: '11px', opacity: 0.5 } }, '悬停看占比'),
-              hot ? h('span', { style: { fontSize: '14px', fontWeight: 600 } }, pct(hot.share)) : null,
+              hot ? h('span', { style: { fontSize: '10px', opacity: 0.8 } }, hot.name) : null,
+              hot ? h('span', { style: { fontSize: '13px', fontWeight: 600 } }, pct(hot.share)) : null,
             ),
           ),
           h(
             'div',
             { style: PIE_LEGEND },
-            slices.map(function (s, i) {
+            rows.map(function (s, i) {
               var isHot = hovered === i
               var dimmed = hovered !== null && !isHot
               return h(
@@ -528,8 +535,8 @@ window.__ModuleLoader__.load({
                     display: 'flex',
                     alignItems: 'center',
                     gap: '6px',
-                    animationDelay: 140 + i * 45 + 'ms',
-                    opacity: dimmed ? 0.45 : 1,
+                    animationDelay: 140 + i * 30 + 'ms',
+                    opacity: dimmed ? 0.4 : 1,
                     transition: 'opacity 150ms ease',
                   },
                   onMouseEnter: function () {
@@ -556,6 +563,25 @@ window.__ModuleLoader__.load({
                 h('span', { style: { fontVariantNumeric: 'tabular-nums', opacity: 0.75 } }, pct(s.share)),
               )
             }),
+            collapsed
+              ? h(
+                  'div',
+                  {
+                    onClick: function () {
+                      setExpanded(!expanded)
+                    },
+                    style: {
+                      marginTop: '2px',
+                      fontSize: '11px',
+                      opacity: 0.55,
+                      cursor: 'pointer',
+                      textAlign: 'right',
+                      userSelect: 'none',
+                    },
+                  },
+                  expanded ? '收起' : '全部 ' + slices.length + ' 个 · 展开',
+                )
+              : null,
           ),
         ),
       )
