@@ -19,6 +19,24 @@
     "test:all": "node --test --test-isolation=none test/*.test.js"
   },
   "engines": { "node": ">=22" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Iseapisu/dsh-bilibili-cocoon.git"
+  },
+  "bugs": { "url": "https://github.com/Iseapisu/dsh-bilibili-cocoon/issues" },
+  "homepage": "https://github.com/Iseapisu/dsh-bilibili-cocoon#readme",
+  "keywords": [
+    "bilibili",
+    "recommendation",
+    "filter-bubble",
+    "echo-chamber",
+    "data-visualization",
+    "deepseek-harness",
+    "nodejs",
+    "cli",
+    "sqlite",
+    "privacy"
+  ],
   "license": "MIT",
   "private": true
 }
