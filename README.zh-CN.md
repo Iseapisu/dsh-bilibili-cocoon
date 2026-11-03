@@ -68,7 +68,7 @@ index = 100 × ( 0.55 × (1 − 归一化熵)
 | 每日 `rcmd` 快照（`rcmd`） | 28 | 18.4 | `feed` |
 | 观看历史（`history`） | 210 | 21.1 | `history` |
 
-**21.1 是观看历史的数，不是首页的。** 算术没错，错的是把它说成「首页的茧房指数」。三行的公式没有任何差别，只有样本不同。每个消费方都必须标注来源：`cocoonScore()` 返回 `basis`，汇总接口按天透出成 [`trend.points[].basis`](#trend)。趋势里 2026-10-30 / 11-01 / 11-02 三个点全是 `history`（209/209/210 行），所以它们贴在 21 附近，而不是 15 附近。
+**21.1 是观看历史的数，不是首页的。** 算术没错，错的是把它说成「首页的茧房指数」。三行的公式没有任何差别，只有样本不同。每个消费方都必须标注来源：`cocoonScore()` 返回 `basis`，汇总接口按天透出成 [`trend.points[].basis`](#trend)。趋势里 2026-10-30 到 11-03 四个点全是 `history`（209/209/210/210 行），所以它们贴在 21–23 附近，而不是 15 附近。
 
 ### 校准：等级标签的信息量很低
 
@@ -84,8 +84,8 @@ v1 就是这么把 28 条内容算出 0.98 熵、误判成「开阔」的。
 
 两张表配合使用，缺一不可：
 
-- `src/region-map.json`：二级分区名 → 一级分区（109 条），`tools/build-region-map.mjs` 从排行榜反推 + 手工补漏。
-- `src/tid-region.json`：tid → 二级分区名（33+ 条），`tools/build-tid-map.mjs` 反查生成。
+- `src/region-map.json`：二级分区名 → 一级分区（110 条），`tools/build-region-map.mjs` 从排行榜反推 + 手工补漏。
+- `src/tid-region.json`：tid → 二级分区名（64 条），`tools/build-tid-map.mjs` 反查生成。
 
 **为什么需要第二张表**：`/x/web-interface/view` 现在不返回 `tname`，只给 `tid`（见「数据口径」）。
 没有它，rcmd 流的分区名会退化成「分区230」这种占位值，`parentOf()` 认不出、整条落进「其他」，
@@ -294,11 +294,12 @@ node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分�
 ```json
 {
   "days": 7,
-  "covered": 3,
+  "covered": 4,
   "points": [
     { "date": "2026-10-30", "cocoon": 23.1, "amplification": null, "themes": null, "samples": 209, "basis": "history" },
     { "date": "2026-11-01", "cocoon": 22.7, "amplification": null, "themes": null, "samples": 209, "basis": "history" },
-    { "date": "2026-11-02", "cocoon": 21.1, "amplification": 2.6, "themes": 10, "samples": 210, "basis": "history" }
+    { "date": "2026-11-02", "cocoon": 21.1, "amplification": 2.6, "themes": 10, "samples": 210, "basis": "history" },
+    { "date": "2026-11-03", "cocoon": 21.5, "amplification": 2.18, "themes": 10, "samples": 210, "basis": "history" }
   ]
 }
 ```
@@ -308,7 +309,7 @@ node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分�
 - 每个点：`cocoon` 是 `basis` 指定那个样本的 0–100 **分区-UP 集中度**，**越低越分散**；
   `basis` 在该天历史 ≥ 10 条时是 `'history'`，否则是 `'feed'`，`cocoon` 为 `null` 时它也是 `null`；
   `amplification` 是当天的 `headline.ratio`（行数口径）；`themes` 是登录流里出现的不同主题数；`samples` 是 `cocoon` 背后的样本条数。
-- **不要脱离 `basis` 读 `cocoon`。** 上面三个点全是 `history`、209/209/210 行，所以 23.1 / 22.7 / 21.1 描述的是**观看历史**；
+- **不要脱离 `basis` 读 `cocoon`。** 上面四个点全是 `history`、209/209/210/210 行，所以 23.1 / 22.7 / 21.1 / 21.5 描述的是**观看历史**；
   84 行的首页流按同一公式是 14.9，28 行的 `rcmd` 快照是 18.4。`feed` 基准的点和 `history` 基准的点不可比。
 - 各指标各自降级：只有 snapshot、没有 `exposure` 的天照样有点，但 `amplification` 和 `themes` 是 `null`。
   `null` 是「算不出来」，不是 0。
@@ -337,7 +338,7 @@ node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分�
 - **一级分区映射有洞。** 2026-11-02 登录流里 19% 的条目没有一级分区，因为 `view` 现在返回空 `tname`。`parentOf('')` 把这些行丢进兜底的 `其他`：既稀释了真实分区，又把 `其他` 撑大；`quality.feedMappedRatio` 会报出这个比例，而不是藏起来（计入指数那个样本看 `quality.mappedRatio`）。分区熵——也就是这个指数——的上限取决于这张映射表。
 - **游客基线是「没有账号历史」，不是中性基线。** 每轮换新 `buvid3` 是唯一能重置的部分；IP、城市、运营商、UA 换不掉，游客流仍然按地理位置给内容。
 - **曝光侧只有 Web 端。** 只采 `x/web-interface/wbi/index/top/feed/rcmd`。App 的 `app.bilibili.com/x/v2/feed/index` 是另一套接口、另一套规则，而且不吃 `SESSDATA`（见「已知边界」）。
-- **三天不是趋势。** 2026-10-30、11-01、11-02 就是全部数据，线在 21.1–23.1 之间动，样本约 210 条。它证明管线是通的，不证明有什么东西在变。
+- **四天说明不了趋势。** 2026-10-30、11-01、11-02、11-03 就是全部数据，线在 21.1–23.1 之间动，样本约 210 条。它证明管线是通的，不证明有什么东西在变。
 
 ## 现在能读到什么
 
@@ -360,8 +361,8 @@ node tools/trend.mjs                  # 多天趋势对比（指数/熵/UP 分�
   其中最强的一个只占这 20 行里的 1 行，离 30% 的门槛差得远，所以 `advice.kind` 是 `watch`：题材层面放大，不是单一 UP 主。
 - `feedFocus` 同一天：`top3Share` 51.2 %、`effectiveThemes` 8.15 / `totalThemes` 10、`units` 84 / 38、`repeatRate` 0 / 0.54。
   一半的流挤在三个主题里，而词表有十个。
-- 这一周：`2026-10-30 → 23.1`、`2026-11-01 → 22.7`、`2026-11-02 → 21.1`，`covered: 3` / 7，三个点全是 `basis: history`、209/209/210 行。
-  10-31 没有快照，它不出现在 `points` 里，而不是被画成 0。三天、约 210 条的样本，还不是趋势——对着样本量读，别当结论。
+- 这一周：`2026-10-30 → 23.1`、`2026-11-01 → 22.7`、`2026-11-02 → 21.1`、`2026-11-03 → 21.5`，`covered: 4` / 7，四个点全是 `basis: history`、209/209/210/210 行。
+  10-31 没有快照，它不出现在 `points` 里，而不是被画成 0。四天、约 210 条的样本，还不是趋势——对着样本量读，别当结论。
 
 ## 运行要求
 
@@ -391,4 +392,5 @@ tools/          build-tid-map / fix-region-labels / build-region-map / collect-l
 - [x] 连续多天采样画趋势（`trend`，最近 7 天分区-UP 集中度）
 - [x] 接入 B站真实 tag 作为第三级分类证据，主题覆盖率从 90% 提到 97%（`video_tag`）
 - [ ] 注册 agent 侧工具（`cocoon_report`），让面板和 agent 共用一条代码路径
-- [ ] 把 AI 从主题表里拆出去（它是横切维度：AI 内容横跨科技、音乐、鬼畜），并补一档「时政/社会」
+
+明确不做：把 AI 从主题表里拆出去、补「时政/社会」这类细分档。十个粗粒度主题正好够跟趋势，再细下去维护成本上去，数字反而更难跟进。
