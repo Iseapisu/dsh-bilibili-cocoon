@@ -11,25 +11,30 @@ window.__ModuleLoader__.load({
     var ROUTE = '/dsh-bilibili-cocoon/summary'
 
     // Animation lives in one injected stylesheet: inline styles cannot express a
-    // @keyframes, and the ring should arrive as a ring being drawn rather than as
-    // a finished picture. The panel unmounts when it closes, so reopening replays
-    // it. The prefers-reduced-motion block is not optional — a spinning pie is
-    // exactly the kind of motion someone asking for less of it does not want.
+    // @keyframes, and each sector should swing into place rather than appear fully
+    // drawn. The panel unmounts when it closes, so reopening replays it. The
+    // prefers-reduced-motion block is not optional — a spinning pie is exactly the
+    // kind of motion someone asking for less of it does not want.
     var STYLE_ID = 'dsh-bili-cocoon-styles'
     var STYLES = [
-      '@keyframes cocoon-ring-in {',
-      '  from { transform: rotate(-110deg) scale(.55); opacity: 0 }',
-      '  55% { opacity: 1 }',
-      '  to { transform: rotate(0deg) scale(1); opacity: 1 }',
+      '@keyframes cocoon-seg-in {',
+      '  from { transform: rotate(-120deg) scale(.3) }',
+      '  to { transform: rotate(0deg) scale(1) }',
       '}',
-      '.cocoon-ring { animation: cocoon-ring-in .64s cubic-bezier(.22,.85,.3,1) both }',
+      '.cocoon-seg {',
+      '  transform-box: view-box;',
+      '  transform-origin: var(--seg-center, 54px) var(--seg-center, 54px);',
+      '  animation: cocoon-seg-in .55s cubic-bezier(.22,.85,.3,1) both;',
+      '  animation-delay: var(--seg-delay, 0ms);',
+      '  cursor: pointer;',
+      '}',
       '@keyframes cocoon-row-in {',
       '  from { opacity: 0; transform: translateX(-8px) }',
       '  to { opacity: 1; transform: translateX(0) }',
       '}',
-      '.cocoon-row { animation: cocoon-row-in .42s ease-out both }',
+      '.cocoon-row { animation: cocoon-row-in .42s ease-out both; cursor: pointer }',
       '@media (prefers-reduced-motion: reduce) {',
-      '  .cocoon-ring, .cocoon-row { animation: none }',
+      '  .cocoon-seg, .cocoon-row { animation: none }',
       '}',
     ].join('\n')
 
@@ -101,10 +106,11 @@ window.__ModuleLoader__.load({
       borderRadius: '4px',
     }
 
-    // Partition pie. The panel is a fixed 380px wide, so the circle and the legend
+    // Partition pie. The panel is a fixed 380px wide, so the ring and the legend
     // take fixed sizes rather than a flex ratio that reflows on every render.
     var PIE_SIZE = 108
-    var PIE_HOLE = 62
+    var PIE_R = 54
+    var PIE_R_INNER = 32
     var PIE_COLORS = ['#8ab4f8', '#f2a65a', '#7bd88f', '#e08fd0', '#f7d060', '#7fd1d8', '#9aa4b2']
     var PIE_SECTION = {
       marginTop: '10px',
@@ -370,16 +376,45 @@ window.__ModuleLoader__.load({
       return h('div', { key: id }, row, open ? expandBlock(attr) : null)
     }
 
-    // The home feed's partition mix as a ring. This replaces the 0-100 composite
-    // index on the panel: a share of a circle needs no formula to read, and
-    // "14 / 19 个分区" answers the other question - how much of the site this feed
-    // touches at all.
-    function categoryBlock(cats) {
+    // A donut sector as an SVG path. Angles are degrees clockwise from 12 o'clock,
+    // where a pie chart conventionally starts.
+    function arcPath(cx, cy, rOuter, rInner, a0, a1) {
+      var rad = function (a) {
+        return ((a - 90) * Math.PI) / 180
+      }
+      var pt = function (r, a) {
+        return [cx + r * Math.cos(rad(a)), cy + r * Math.sin(rad(a))]
+      }
+      var p0 = pt(rOuter, a0)
+      var p1 = pt(rOuter, a1)
+      var p2 = pt(rInner, a1)
+      var p3 = pt(rInner, a0)
+      var large = a1 - a0 > 180 ? 1 : 0
+      return (
+        'M' + p0[0].toFixed(2) + ' ' + p0[1].toFixed(2) +
+        ' A' + rOuter + ' ' + rOuter + ' 0 ' + large + ' 1 ' + p1[0].toFixed(2) + ' ' + p1[1].toFixed(2) +
+        ' L' + p2[0].toFixed(2) + ' ' + p2[1].toFixed(2) +
+        ' A' + rInner + ' ' + rInner + ' 0 ' + large + ' 0 ' + p3[0].toFixed(2) + ' ' + p3[1].toFixed(2) +
+        ' Z'
+      )
+    }
+
+    // The home feed's partition mix as a donut. SVG rather than a conic-gradient
+    // because each sector has to answer the pointer on its own: hovering a slice
+    // dims the other six and swaps the label inside the hole, which is the reading
+    // a pie exists for. A conic-gradient is a single background image — it can only
+    // animate as one piece and cannot tell which slice the cursor is over.
+    function CategoryBlock(props) {
+      var hoverState = React.useState(null)
+      var hovered = hoverState[0]
+      var setHovered = hoverState[1]
+
+      var cats = props.cats
       if (!cats || typeof cats !== 'object') return null
       var items = Array.isArray(cats.items) ? cats.items : []
       if (!items.length) return null
 
-      // Seven slices is as many as a 108px ring can carry; the tail becomes one
+      // Seven sectors is as many as a 108px ring can carry; the tail becomes one
       // grey slice with its own legend row, never silently dropped.
       var slices = []
       items.slice(0, 6).forEach(function (it, i) {
@@ -400,17 +435,12 @@ window.__ModuleLoader__.load({
         slices.push({ name: '其余 ' + tail.length + ' 个分区', share: tailShare, color: PIE_COLORS[6] })
       }
 
-      var acc = 0
-      var stops = slices.map(function (s) {
-        var from = acc
-        acc += s.share
-        return s.color + ' ' + (from * 100).toFixed(2) + '% ' + (acc * 100).toFixed(2) + '%'
-      })
-
       var covered = num(cats.covered)
       var total = num(cats.total)
       var counter = covered !== null && total !== null ? covered + ' / ' + total + ' 个分区' : null
-      var holeOffset = (PIE_SIZE - PIE_HOLE) / 2 + 'px'
+      var hot = hovered !== null && slices[hovered] ? slices[hovered] : null
+      var cx = PIE_SIZE / 2
+      var acc = 0
 
       return h(
         'div',
@@ -421,34 +451,74 @@ window.__ModuleLoader__.load({
           { style: PIE_BODY },
           h(
             'div',
-            {
-              className: 'cocoon-ring',
-              style: { position: 'relative', width: PIE_SIZE + 'px', height: PIE_SIZE + 'px', flex: 'none' },
-            },
-            h('div', {
-              style: {
-                width: '100%',
-                height: '100%',
-                borderRadius: '50%',
-                background: 'conic-gradient(' + stops.join(', ') + ')',
+            { style: { position: 'relative', width: PIE_SIZE + 'px', height: PIE_SIZE + 'px', flex: 'none' } },
+            h(
+              'svg',
+              {
+                width: PIE_SIZE,
+                height: PIE_SIZE,
+                viewBox: '0 0 ' + PIE_SIZE + ' ' + PIE_SIZE,
+                role: 'img',
+                'aria-label': '分区构成饼图',
               },
-            }),
-            h('div', {
-              style: {
-                position: 'absolute',
-                top: holeOffset,
-                left: holeOffset,
-                width: PIE_HOLE + 'px',
-                height: PIE_HOLE + 'px',
-                borderRadius: '50%',
-                background: '#1c1e22',
+              slices.map(function (s, i) {
+                var a0 = acc * 360
+                acc += s.share
+                var a1 = acc * 360
+                var isHot = hovered === i
+                var dimmed = hovered !== null && !isHot
+                return h('path', {
+                  key: 's' + i,
+                  d: arcPath(cx, cx, PIE_R, PIE_R_INNER, a0, a1),
+                  fill: s.color,
+                  className: 'cocoon-seg',
+                  style: {
+                    '--seg-delay': i * 55 + 'ms',
+                    '--seg-center': cx + 'px',
+                    opacity: dimmed ? 0.32 : 1,
+                    stroke: isHot ? '#ffffff' : 'none',
+                    strokeWidth: isHot ? 1.5 : 0,
+                    transition: 'opacity 150ms ease, stroke 150ms ease',
+                  },
+                  onMouseEnter: function () {
+                    setHovered(i)
+                  },
+                  onMouseLeave: function () {
+                    setHovered(null)
+                  },
+                })
+              }),
+            ),
+            h(
+              'div',
+              {
+                style: {
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: PIE_SIZE + 'px',
+                  height: PIE_SIZE + 'px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  pointerEvents: 'none',
+                  textAlign: 'center',
+                  lineHeight: 1.25,
+                },
               },
-            }),
+              hot
+                ? h('span', { style: { fontSize: '11px', opacity: 0.85 } }, hot.name)
+                : h('span', { style: { fontSize: '11px', opacity: 0.5 } }, '悬停看占比'),
+              hot ? h('span', { style: { fontSize: '14px', fontWeight: 600 } }, pct(hot.share)) : null,
+            ),
           ),
           h(
             'div',
             { style: PIE_LEGEND },
             slices.map(function (s, i) {
+              var isHot = hovered === i
+              var dimmed = hovered !== null && !isHot
               return h(
                 'div',
                 {
@@ -459,10 +529,30 @@ window.__ModuleLoader__.load({
                     alignItems: 'center',
                     gap: '6px',
                     animationDelay: 140 + i * 45 + 'ms',
+                    opacity: dimmed ? 0.45 : 1,
+                    transition: 'opacity 150ms ease',
+                  },
+                  onMouseEnter: function () {
+                    setHovered(i)
+                  },
+                  onMouseLeave: function () {
+                    setHovered(null)
                   },
                 },
                 h('span', { style: Object.assign({}, PIE_SWATCH, { background: s.color }) }),
-                h('span', { style: { flex: 1, opacity: 0.85, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.name),
+                h(
+                  'span',
+                  {
+                    style: {
+                      flex: 1,
+                      opacity: 0.85,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    },
+                  },
+                  s.name,
+                ),
                 h('span', { style: { fontVariantNumeric: 'tabular-nums', opacity: 0.75 } }, pct(s.share)),
               )
             }),
@@ -621,7 +711,7 @@ window.__ModuleLoader__.load({
             setExpanded(expanded === nextId ? null : nextId)
           })
         }),
-        categoryBlock(data.categories),
+        h(CategoryBlock, { cats: data.categories }),
         breakoutBlock(data.breakout),
       )
     }
